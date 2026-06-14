@@ -390,20 +390,21 @@ func (m *Model) View() string {
 }
 
 func (m *Model) headerView() string {
-	title := titleStyle.Render("🏦 Enable Banking · Operator Console")
+	info := m.prov.Info()
+	title := titleStyle.Render("🏦 " + info.Name + " · Operator Console")
 
 	envStyle := successStyle
-	if strings.EqualFold(m.cfg.EnableBanking.Environment, "PRODUCTION") {
+	if strings.EqualFold(info.Environment, "PRODUCTION") {
 		envStyle = errorStyle
 	}
-	consentText, consentStyle := consentStatus(m.cfg)
+	consentText, consentStyle := consentStatus(info.ConsentValidUntil)
 
 	line1 := fmt.Sprintf("%s  %s   Bank: %s",
-		labelStyle.Render("Env"), envStyle.Render(m.cfg.EnableBanking.Environment),
-		normalStyle.Render(fmt.Sprintf("%s (%s)", m.cfg.EnableBanking.BankName, m.cfg.EnableBanking.BankCountry)),
+		labelStyle.Render("Env"), envStyle.Render(info.Environment),
+		normalStyle.Render(fmt.Sprintf("%s (%s)", info.BankName, info.BankCountry)),
 	)
 	line2 := fmt.Sprintf("%s  %s   %s  %s",
-		labelStyle.Render("Session"), normalStyle.Render(shorten(m.cfg.EnableBanking.SessionID, 12)),
+		labelStyle.Render("Session"), normalStyle.Render(shorten(info.SessionRef, 12)),
 		labelStyle.Render("Consent"), consentStyle.Render(consentText),
 	)
 	line3 := fmt.Sprintf("%s  %s · access=%s · cache=%dm",
@@ -517,8 +518,7 @@ func (m *Model) renderAbbreviationsHelp() string {
 
 // Helpers.
 
-func consentStatus(cfg *config.Config) (string, lipgloss.Style) {
-	vu := cfg.EnableBanking.ConsentValidUntil
+func consentStatus(vu time.Time) (string, lipgloss.Style) {
 	if vu.IsZero() {
 		return "unknown", tipStyle
 	}

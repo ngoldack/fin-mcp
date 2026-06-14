@@ -19,8 +19,29 @@ import (
 
 	"github.com/mattn/go-isatty"
 	"github.com/ngoldack/fin-mcp/internal/config"
+	"github.com/ngoldack/fin-mcp/internal/secret"
 	"github.com/ngoldack/fin-mcp/pkg/enablebanking"
 )
+
+// storeKeyInKeychain reads the PEM at keyPath, stores it in the OS keychain, and
+// rewrites cfg to reference the keychain account instead of the file path.
+// Returns the PEM content for immediate use during setup.
+func storeKeyInKeychain(cfg *config.Config, keyPath string) (string, error) {
+	b, err := os.ReadFile(keyPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to read private key for keychain: %w", err)
+	}
+	account := cfg.EnableBanking.AppID
+	if account == "" {
+		account = "enable-banking"
+	}
+	if err := secret.Set(account, string(b)); err != nil {
+		return "", fmt.Errorf("failed to store private key in OS keychain: %w", err)
+	}
+	cfg.EnableBanking.PrivateKeyKeyring = account
+	cfg.EnableBanking.PrivateKeyPath = ""
+	return string(b), nil
+}
 
 func GenerateRSAKeyAndCertificate(keyPath, certPath string) error {
 	// Generate 4096-bit RSA private key
@@ -310,7 +331,7 @@ func RunInteractiveSetup(configPath string) error {
 	return nil
 }
 
-func RunFlagSetup(configPath, appID, keyPath, environment, redirectURL, country, bank, code string, days int) error {
+func RunFlagSetup(configPath, appID, keyPath, environment, redirectURL, country, bank, code string, days int, keychain bool) error {
 	ctx := context.Background()
 
 	if code != "" {
@@ -373,6 +394,17 @@ func RunFlagSetup(configPath, appID, keyPath, environment, redirectURL, country,
 		},
 	}
 
+	// Optionally move the private key into the OS keychain (local only).
+	keyContentForClient := ""
+	if keychain {
+		content, err := storeKeyInKeychain(cfg, keyPath)
+		if err != nil {
+			return err
+		}
+		keyContentForClient = content
+		fmt.Printf("Stored private key in the OS keychain (account %q); config references the keychain, not the file.\n", cfg.EnableBanking.PrivateKeyKeyring)
+	}
+
 	if country == "" || bank == "" {
 		// Save initial config (before authorization)
 		_ = config.SaveConfig(configPath, cfg)
@@ -380,7 +412,7 @@ func RunFlagSetup(configPath, appID, keyPath, environment, redirectURL, country,
 		return nil
 	}
 
-	client := enablebanking.NewClient(cfg.EnableBanking.AppID, cfg.EnableBanking.PrivateKeyPath, cfg.EnableBanking.PrivateKeyContent, cfg.EnableBanking.Environment)
+	client := enablebanking.NewClient(cfg.EnableBanking.AppID, cfg.EnableBanking.PrivateKeyPath, keyContentForClient, cfg.EnableBanking.Environment)
 	state := fmt.Sprintf("state-%d", time.Now().UnixNano())
 	fmt.Println("Initiating Account Information Service (AIS) consent...")
 	authResp, err := client.StartAuthorization(ctx, bank, country, state, redirectURL, days)

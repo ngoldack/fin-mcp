@@ -57,7 +57,7 @@ func TestDashboard_OverviewAndDetailFlow(t *testing.T) {
 		t.Fatalf("state = %v, want viewOverview", m.state)
 	}
 	view := m.View()
-	for _, want := range []string{"Operator Console", "Accounts (1)", "Main Checking", "SANDBOX", "ReadOnly", "valid for"} {
+	for _, want := range []string{"Operator Console", "Accounts (1)", "Main Checking", "MOCK", "ReadOnly", "valid for"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("overview view missing %q\n---\n%s", want, view)
 		}
@@ -148,8 +148,7 @@ func TestHelpers(t *testing.T) {
 		t.Errorf("truncate = %q, want %q", got, "hello w…")
 	}
 
-	expired := &config.Config{}
-	if _, style := consentStatus(expired); style.GetForeground() != tipStyle.GetForeground() {
+	if _, style := consentStatus(time.Time{}); style.GetForeground() != tipStyle.GetForeground() {
 		t.Errorf("zero consent should map to the unknown/tip style")
 	}
 }

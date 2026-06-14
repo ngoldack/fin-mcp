@@ -32,3 +32,13 @@ type ConnectionStatus struct {
 	Status            string
 	ConsentValidUntil time.Time
 }
+
+// ProviderInfo is static, display-oriented metadata about a connected provider.
+type ProviderInfo struct {
+	Name              string
+	Environment       string
+	BankName          string
+	BankCountry       string
+	SessionRef        string
+	ConsentValidUntil time.Time
+}

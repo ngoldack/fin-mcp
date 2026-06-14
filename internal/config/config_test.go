@@ -152,3 +152,29 @@ func TestSaveRoundTrip(t *testing.T) {
 		t.Errorf("round trip mismatch: %+v", got)
 	}
 }
+
+func TestLoad_Providers(t *testing.T) {
+	p := writeFile(t, `{
+      "providers": [
+        {"name":"m1","type":"mock","mock":{"accounts":2}},
+        {"name":"bank2","type":"enable-banking","enable_banking":{"app_id":"`+validAppID+`","environment":"SANDBOX"}}
+      ],
+      "mcp": {}
+    }`)
+	cfg, err := LoadConfig(p)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if len(cfg.Providers) != 2 {
+		t.Fatalf("providers = %d, want 2", len(cfg.Providers))
+	}
+	if cfg.Providers[0].Type != "mock" || cfg.Providers[1].Type != "enable-banking" {
+		t.Errorf("provider types = %q,%q", cfg.Providers[0].Type, cfg.Providers[1].Type)
+	}
+	if cfg.Providers[1].EnableBanking == nil || cfg.Providers[1].EnableBanking.AppID != validAppID {
+		t.Errorf("enable-banking sub-config not parsed: %+v", cfg.Providers[1].EnableBanking)
+	}
+	if cfg.Providers[0].Mock == nil || cfg.Providers[0].Mock.Accounts != 2 {
+		t.Errorf("mock sub-config not parsed: %+v", cfg.Providers[0].Mock)
+	}
+}

@@ -33,6 +33,7 @@ type SetupCmd struct {
 	Bank        string `help:"Name of the bank (ASPSP)."`
 	Code        string `help:"Authorization code from the bank redirect to complete setup."`
 	Days        int    `help:"Consent validity in days." default:"90"`
+	Keychain    bool   `help:"Store the private key in the OS keychain (local only; not for Kubernetes)."`
 }
 
 // Run executes the setup command. It enforces an interactive TTY and chooses
@@ -46,7 +47,7 @@ func (c *SetupCmd) Run() error {
 	if c.AppID != "" || c.Code != "" {
 		return setup.RunFlagSetup(
 			c.Config, c.AppID, c.PrivateKey, c.Environment,
-			c.RedirectURL, c.Country, c.Bank, c.Code, c.Days,
+			c.RedirectURL, c.Country, c.Bank, c.Code, c.Days, c.Keychain,
 		)
 	}
 

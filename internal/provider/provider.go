@@ -10,13 +10,15 @@ import (
 	"github.com/ngoldack/fin-mcp/internal/bank"
 	"github.com/ngoldack/fin-mcp/internal/config"
 	ebadapter "github.com/ngoldack/fin-mcp/internal/provider/enablebanking"
+	"github.com/ngoldack/fin-mcp/internal/provider/mock"
 )
 
 // Provider is a bank-connection port. All methods speak the domain types in the
 // bank package so callers never depend on a specific provider's SDK.
 type Provider interface {
-	// Name identifies the provider (e.g. "enable-banking").
 	Name() string
+	// Info returns static, display-oriented metadata.
+	Info() bank.ProviderInfo
 	// VerifyConnection checks session/consent health.
 	VerifyConnection(ctx context.Context) (bank.ConnectionStatus, error)
 	// ListAccounts returns all accounts reachable in the current session.
@@ -33,8 +35,7 @@ type Provider interface {
 	SubmitTransfer(ctx context.Context, paymentID string) (*bank.TransferResult, error)
 }
 
-// Registry holds the providers connected to the application. Today only one is
-// wired, but the type supports connecting several in the future.
+// Registry holds the providers connected to the application.
 type Registry struct {
 	order     []string
 	providers map[string]Provider
@@ -76,14 +77,43 @@ func (r *Registry) All() []Provider {
 	return out
 }
 
-// FromConfig builds the registry from configuration. Currently it wires the
-// Enable Banking provider; additional providers can be added here later.
+// FromConfig builds the registry from configuration: the legacy top-level
+// enable_banking block (if populated) becomes the primary provider, and each
+// entry in providers[] is added as a typed, named instance.
 func FromConfig(cfg *config.Config, configPath string) (*Registry, error) {
 	reg := NewRegistry()
-	eb, err := ebadapter.New(cfg, configPath)
-	if err != nil {
-		return nil, fmt.Errorf("init enable-banking provider: %w", err)
+	persist := func() { _ = config.SaveConfig(configPath, cfg) }
+
+	if cfg.EnableBanking.AppID != "" || cfg.EnableBanking.SessionID != "" {
+		eb, err := ebadapter.New("enable-banking", &cfg.EnableBanking, persist)
+		if err != nil {
+			return nil, fmt.Errorf("init enable-banking provider: %w", err)
+		}
+		reg.Add(eb)
 	}
-	reg.Add(eb)
+
+	for i := range cfg.Providers {
+		pc := &cfg.Providers[i]
+		name := pc.Name
+		if name == "" {
+			name = pc.Type
+		}
+		switch pc.Type {
+		case "enable-banking":
+			eb, err := ebadapter.New(name, pc.EnableBanking, persist)
+			if err != nil {
+				return nil, fmt.Errorf("init provider %q: %w", name, err)
+			}
+			reg.Add(eb)
+		case "mock":
+			reg.Add(mock.NewNamed(name))
+		default:
+			return nil, fmt.Errorf("unknown provider type %q for instance %q", pc.Type, name)
+		}
+	}
+
+	if len(reg.All()) == 0 {
+		return nil, fmt.Errorf("no bank provider configured; run setup or set providers in config")
+	}
 	return reg, nil
 }

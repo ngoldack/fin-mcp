@@ -10,40 +10,65 @@ import (
 
 	"github.com/ngoldack/fin-mcp/internal/bank"
 	"github.com/ngoldack/fin-mcp/internal/config"
+	"github.com/ngoldack/fin-mcp/internal/secret"
 	eb "github.com/ngoldack/fin-mcp/pkg/enablebanking"
 )
 
-const providerName = "enable-banking"
-
 // Adapter implements provider.Provider on top of the Enable Banking SDK.
 type Adapter struct {
-	client     eb.APIClient
-	cfg        *config.Config
-	configPath string
+	name    string
+	client  eb.APIClient
+	cfg     *config.EnableBankingConfig
+	persist func() // saves the owning application config (e.g. refreshed consent)
 }
 
-// New builds the adapter and its underlying SDK client from configuration.
-func New(cfg *config.Config, configPath string) (*Adapter, error) {
-	client := eb.NewClient(
-		cfg.EnableBanking.AppID, cfg.EnableBanking.PrivateKeyPath,
-		cfg.EnableBanking.PrivateKeyContent, cfg.EnableBanking.Environment,
-	)
-	return NewWithClient(client, cfg, configPath), nil
+// New builds the adapter and its underlying SDK client from a provider config.
+// If PrivateKeyKeyring is set, the PEM is read from the OS keychain (local only).
+func New(name string, cfg *config.EnableBankingConfig, persist func()) (*Adapter, error) {
+	if cfg == nil {
+		return nil, fmt.Errorf("enable-banking provider %q: missing enable_banking config", name)
+	}
+
+	keyContent := cfg.PrivateKeyContent
+	if cfg.PrivateKeyKeyring != "" {
+		v, err := secret.Get(cfg.PrivateKeyKeyring)
+		if err != nil {
+			return nil, fmt.Errorf("read private key from keychain account %q: %w", cfg.PrivateKeyKeyring, err)
+		}
+		keyContent = v
+	}
+
+	client := eb.NewClient(cfg.AppID, cfg.PrivateKeyPath, keyContent, cfg.Environment)
+	return NewWithClient(name, client, cfg, persist), nil
 }
 
 // NewWithClient injects an SDK client (used in tests).
-func NewWithClient(client eb.APIClient, cfg *config.Config, configPath string) *Adapter {
-	return &Adapter{client: client, cfg: cfg, configPath: configPath}
+func NewWithClient(name string, client eb.APIClient, cfg *config.EnableBankingConfig, persist func()) *Adapter {
+	if persist == nil {
+		persist = func() {}
+	}
+	return &Adapter{name: name, client: client, cfg: cfg, persist: persist}
 }
 
-func (a *Adapter) Name() string { return providerName }
+func (a *Adapter) Name() string { return a.name }
+
+func (a *Adapter) Info() bank.ProviderInfo {
+	return bank.ProviderInfo{
+		Name:              a.name,
+		Environment:       a.cfg.Environment,
+		BankName:          a.cfg.BankName,
+		BankCountry:       a.cfg.BankCountry,
+		SessionRef:        a.cfg.SessionID,
+		ConsentValidUntil: a.cfg.ConsentValidUntil,
+	}
+}
 
 func (a *Adapter) VerifyConnection(ctx context.Context) (bank.ConnectionStatus, error) {
-	if a.cfg.EnableBanking.SessionID == "" {
+	if a.cfg.SessionID == "" {
 		return bank.ConnectionStatus{}, fmt.Errorf("no active bank session found; run setup to link your bank account")
 	}
 
-	sess, err := a.client.GetSession(ctx, a.cfg.EnableBanking.SessionID)
+	sess, err := a.client.GetSession(ctx, a.cfg.SessionID)
 	if err != nil {
 		return bank.ConnectionStatus{}, fmt.Errorf("failed to verify bank session: %w; your session may have been invalidated", err)
 	}
@@ -54,10 +79,9 @@ func (a *Adapter) VerifyConnection(ctx context.Context) (bank.ConnectionStatus, 
 		ConsentValidUntil: sess.Access.ValidUntil,
 	}
 
-	// Persist a refreshed consent-expiry timestamp.
-	if !sess.Access.ValidUntil.IsZero() && !sess.Access.ValidUntil.Equal(a.cfg.EnableBanking.ConsentValidUntil) {
-		a.cfg.EnableBanking.ConsentValidUntil = sess.Access.ValidUntil
-		_ = config.SaveConfig(a.configPath, a.cfg)
+	if !sess.Access.ValidUntil.IsZero() && !sess.Access.ValidUntil.Equal(a.cfg.ConsentValidUntil) {
+		a.cfg.ConsentValidUntil = sess.Access.ValidUntil
+		a.persist()
 	}
 
 	if !status.Authorized {
@@ -67,7 +91,7 @@ func (a *Adapter) VerifyConnection(ctx context.Context) (bank.ConnectionStatus, 
 }
 
 func (a *Adapter) ListAccounts(ctx context.Context) ([]bank.Account, error) {
-	sess, err := a.client.GetSession(ctx, a.cfg.EnableBanking.SessionID)
+	sess, err := a.client.GetSession(ctx, a.cfg.SessionID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to retrieve session details: %w", err)
 	}
@@ -78,7 +102,7 @@ func (a *Adapter) ListAccounts(ctx context.Context) ([]bank.Account, error) {
 		if err != nil {
 			continue
 		}
-		accounts = append(accounts, mapAccount(*details, a.cfg.EnableBanking.BankName))
+		accounts = append(accounts, mapAccount(*details, a.cfg.BankName))
 	}
 	if len(accounts) == 0 {
 		return nil, fmt.Errorf("no accounts linked or accessible in this session")
@@ -107,7 +131,7 @@ func (a *Adapter) InitiateTransfer(ctx context.Context, req bank.TransferRequest
 	state := fmt.Sprintf("pay-%d", time.Now().UnixNano())
 	resp, err := a.client.CreatePayment(
 		ctx, req.DebtorIBAN, req.CreditorIBAN, req.CreditorName,
-		req.Amount, req.Currency, req.PaymentType, state, a.cfg.EnableBanking.RedirectURL,
+		req.Amount, req.Currency, req.PaymentType, state, a.cfg.RedirectURL,
 	)
 	if err != nil {
 		return nil, err

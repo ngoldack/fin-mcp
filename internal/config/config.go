@@ -40,12 +40,27 @@ type EnableBankingConfig struct {
 	AppID             string    `json:"app_id"`
 	PrivateKeyPath    string    `json:"private_key_path,omitempty"`
 	PrivateKeyContent string    `json:"private_key_content,omitempty"`
+	PrivateKeyKeyring string    `json:"private_key_keyring,omitempty"` // OS keychain account holding the PEM (local only; optional)
 	Environment       string    `json:"environment"`
 	RedirectURL       string    `json:"redirect_url"`
 	BankName          string    `json:"bank_name"`
 	BankCountry       string    `json:"bank_country"`
 	SessionID         string    `json:"session_id,omitempty"`
 	ConsentValidUntil time.Time `json:"consent_valid_until,omitempty"`
+}
+
+// MockProviderConfig configures the in-memory mock provider (testing/demo).
+type MockProviderConfig struct {
+	Accounts int `json:"accounts,omitempty"`
+}
+
+// ProviderConfig is one typed, named provider instance. Exactly one of the
+// typed sub-configs must be set, matching Type.
+type ProviderConfig struct {
+	Name          string               `json:"name,omitempty"` // instance id (defaults to Type)
+	Type          string               `json:"type"`           // "enable-banking" | "mock"
+	EnableBanking *EnableBankingConfig `json:"enable_banking,omitempty"`
+	Mock          *MockProviderConfig  `json:"mock,omitempty"`
 }
 
 type MCPConfig struct {
@@ -59,7 +74,8 @@ type MCPConfig struct {
 }
 
 type Config struct {
-	EnableBanking EnableBankingConfig `json:"enable_banking"`
+	EnableBanking EnableBankingConfig `json:"enable_banking"`      // legacy primary provider (kept; env-friendly via ENABLE_BANKING_*)
+	Providers     []ProviderConfig    `json:"providers,omitempty"` // additional typed provider instances
 	MCP           MCPConfig           `json:"mcp"`
 }
 
@@ -177,6 +193,18 @@ func (c *Config) Validate() error {
 	case "debug", "info", "warn", "error":
 	default:
 		return fmt.Errorf("invalid mcp.log_level: %q. Valid levels are debug, info, warn, error", c.MCP.LogLevel)
+	}
+
+	for i, p := range c.Providers {
+		switch p.Type {
+		case "enable-banking":
+			if p.EnableBanking == nil {
+				return fmt.Errorf("providers[%d] type 'enable-banking' requires an enable_banking block", i)
+			}
+		case "mock":
+		default:
+			return fmt.Errorf("providers[%d] has unknown type %q (valid: enable-banking, mock)", i, p.Type)
+		}
 	}
 
 	return nil

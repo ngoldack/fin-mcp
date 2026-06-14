@@ -34,9 +34,14 @@ type Provider struct {
 
 // New returns a provider seeded with one account, balances, and a transaction.
 func New() *Provider {
+	return NewNamed("mock")
+}
+
+// NewNamed returns a seeded provider with a custom name.
+func NewNamed(name string) *Provider {
 	acc := bank.Account{ID: "acc-1", Name: "Main Checking", BankName: "Mock Bank", Currency: "EUR", IBAN: "DE89370400440532013000"}
 	return &Provider{
-		NameValue: "mock",
+		NameValue: name,
 		Status:    bank.ConnectionStatus{Authorized: true, Status: "AUTHORIZED", ConsentValidUntil: time.Now().Add(90 * 24 * time.Hour)},
 		Accounts:  []bank.Account{acc},
 		Balances: map[string]bank.Balances{
@@ -57,6 +62,17 @@ func (p *Provider) Name() string {
 		return "mock"
 	}
 	return p.NameValue
+}
+
+func (p *Provider) Info() bank.ProviderInfo {
+	return bank.ProviderInfo{
+		Name:              p.Name(),
+		Environment:       "MOCK",
+		BankName:          "Mock Bank",
+		BankCountry:       "DE",
+		SessionRef:        "mock-session",
+		ConsentValidUntil: p.Status.ConsentValidUntil,
+	}
 }
 
 func (p *Provider) VerifyConnection(context.Context) (bank.ConnectionStatus, error) {
