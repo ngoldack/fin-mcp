@@ -457,7 +457,9 @@ func (m *Model) View() string {
 	s += titleStyle.Render("💳 PocketPay Mobile") + "  " + lipgloss.NewStyle().Foreground(grayColor).Render("v1.1.0") + "\n\n"
 
 	if m.err != nil && m.state != stateTransfer {
-		s += errorStyle.Render(fmt.Sprintf("❌ Error: %v", m.err)) + "\n\n"
+		friendly := bank.FriendlyError(m.err)
+		s += errorStyle.Render(fmt.Sprintf("❌ %s", friendly.Title)) + "\n"
+		s += normalStyle.Render(friendly.Description) + "\n\n"
 		s += helpStyle.Render("Press [Esc] to go back, [Q] to quit.")
 		return s
 	}
@@ -652,7 +654,9 @@ func (m *Model) View() string {
 		s += fmt.Sprintf("Source Account: %s (%s)\n\n", successStyle.Render(a.Name), a.IBAN)
 
 		if m.err != nil {
-			s += errorStyle.Render(fmt.Sprintf("❌ Error: %v", m.err)) + "\n\n"
+			friendly := bank.FriendlyError(m.err)
+			s += errorStyle.Render(fmt.Sprintf("❌ %s", friendly.Title)) + "\n"
+			s += normalStyle.Render(friendly.Description) + "\n\n"
 		}
 
 		if m.transferLoading {

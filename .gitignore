@@ -15,6 +15,12 @@ public.crt
 
 # Local configurations, session credentials and caches
 config.json
+.bank.db
+.bank.db/
+.bank-cache.json
+.pocket-cache.json
+*.db
+*.log
 
 # Go test binaries and coverage files
 *.out
