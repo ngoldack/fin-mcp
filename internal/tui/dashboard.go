@@ -164,7 +164,7 @@ func NewModel(configPath string) (*Model, error) {
 	if !ok {
 		return nil, fmt.Errorf("no bank provider configured")
 	}
-	bCache := bank.NewCache(".bank.db", time.Duration(cfg.MCP.CacheTTLMinutes)*time.Minute)
+	bCache := bank.NewCache(cfg.MCP.CachePath, time.Duration(cfg.MCP.CacheTTLMinutes)*time.Minute)
 
 	return newModel(configPath, cfg, prov, bCache), nil
 }

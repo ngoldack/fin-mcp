@@ -45,14 +45,18 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 # Build explicitly with:  docker build --target standard-runtime -t fin-mcp:standard .
 FROM alpine:latest AS standard-runtime
 
-RUN apk add --no-cache ca-certificates
+RUN apk add --no-cache ca-certificates \
+    && adduser -D -H -u 10001 app
 
 WORKDIR /app
 COPY --from=builder /out/fin-mcp .
 
+# Run as an unprivileged user (the standard image needs no elevated privileges).
+USER app
+
 # Configuration is supplied at runtime via env vars or a mounted file (12-factor / K8s).
 ENTRYPOINT ["./fin-mcp"]
-CMD ["server", "--config", "/etc/enable-banking/config.json"]
+CMD ["server", "--config", "/etc/fin-mcp/config.json"]
 
 # =========================================================================
 # Stage 4: Instrumented Runtime (OTel eBPF Auto-Instrumented)
@@ -84,4 +88,4 @@ ENV OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
 ENV OTEL_GO_AUTO_TARGET_EXE=/app/fin-mcp
 
 ENTRYPOINT ["/usr/local/bin/instrumented-entrypoint.sh"]
-CMD ["server", "--config", "/etc/enable-banking/config.json"]
+CMD ["server", "--config", "/etc/fin-mcp/config.json"]

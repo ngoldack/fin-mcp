@@ -86,11 +86,18 @@ jobs:
   build-and-deliver:
     name: Secure Build & Deliver
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: standard-runtime
+            suffix: standard
+          - target: instrumented-runtime
+            suffix: otel
     env:
       REGISTRY: ghcr.io
       IMAGE_BASE: ghcr.io/${{ github.repository }}
-      SCAN_TAG: enable-banking-otel:scan
     steps:
       - name: Checkout Code
         uses: actions/checkout@v6
@@ -109,58 +116,49 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # ----------------------------------------------------------------------
       # 1. Build a local (loadable) image so Trivy can scan it on EVERY event.
-      #    Attestations are omitted here because they produce an OCI index that
-      #    cannot be loaded into the Docker daemon.
-      # ----------------------------------------------------------------------
-      - name: Build Instrumented OTel Image (local, for scanning)
+      #    Attestations are omitted here (an OCI index cannot be loaded locally).
+      - name: Build ${{ matrix.suffix }} image (local, for scanning)
         uses: docker/build-push-action@v7
         with:
           context: .
-          target: instrumented-runtime
+          target: ${{ matrix.target }}
           load: true
-          tags: ${{ env.SCAN_TAG }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          tags: fin-mcp-${{ matrix.suffix }}:scan
+          cache-from: type=gha,scope=${{ matrix.suffix }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.suffix }}
 
-      - name: Scan OTel Image (Trivy)
+      - name: Scan ${{ matrix.suffix }} image (Trivy)
         uses: aquasecurity/trivy-action@v0.36.0
         with:
-          image-ref: ${{ env.SCAN_TAG }}
+          image-ref: fin-mcp-${{ matrix.suffix }}:scan
           format: sarif
-          output: trivy-otel.sarif
+          output: trivy-${{ matrix.suffix }}.sarif
           severity: 'CRITICAL,HIGH'
-          exit-code: '0' # Report findings to the Security tab without blocking the pipeline.
+          exit-code: '0'
 
-      - name: Upload OTel Trivy Scan Results
+      - name: Upload ${{ matrix.suffix }} Trivy results
         uses: github/codeql-action/upload-sarif@v4
         with:
-          sarif_file: trivy-otel.sarif
-          category: trivy-otel
+          sarif_file: trivy-${{ matrix.suffix }}.sarif
+          category: trivy-${{ matrix.suffix }}
 
-      # ----------------------------------------------------------------------
-      # 2. On main: build + push WITH SBOM/SLSA attestations (cache-accelerated),
-      #    then sign the whole OCI index by digest with Cosign (keyless/OIDC).
-      # ----------------------------------------------------------------------
-      - name: Build & Push Instrumented OTel Image (with Buildkit Attestations)
+      # 2. On main: build + push WITH SBOM/SLSA attestations, then Cosign-sign by digest.
+      - name: Build & push ${{ matrix.suffix }} image (attestations)
         id: build-push
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: docker/build-push-action@v7
         with:
           context: .
-          target: instrumented-runtime
+          target: ${{ matrix.target }}
           push: true
           tags: |
-            ${{ env.IMAGE_BASE }}/otel:latest
-            ${{ env.IMAGE_BASE }}/otel:${{ github.sha }}
-          # Generates & attaches SBOM + SLSA Provenance directly to the OCI Index Manifest.
+            ${{ env.IMAGE_BASE }}/${{ matrix.suffix }}:latest
+            ${{ env.IMAGE_BASE }}/${{ matrix.suffix }}:${{ github.sha }}
           sbom: true
           provenance: mode=max
-          cache-from: type=gha
+          cache-from: type=gha,scope=${{ matrix.suffix }}
 
-      - name: Sign OTel Image & Attestations (Cosign)
-        # Signing by digest signs the entire OCI Index Manifest, securing the image
-        # layers and all attached Buildkit attestations (SBOM & Provenance).
+      - name: Sign ${{ matrix.suffix }} image & attestations (Cosign)
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        run: cosign sign --yes "${{ env.IMAGE_BASE }}/otel@${{ steps.build-push.outputs.digest }}"
+        run: cosign sign --yes "${{ env.IMAGE_BASE }}/${{ matrix.suffix }}@${{ steps.build-push.outputs.digest }}"

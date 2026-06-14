@@ -115,6 +115,7 @@ type MCPConfig struct {
 	Port            int           `json:"port,omitempty"`
 	BearerToken     string        `json:"bearer_token,omitempty"`
 	CacheTTLMinutes int           `json:"cache_ttl_minutes,omitempty"`
+	CachePath       string        `json:"cache_path,omitempty"` // BadgerDB dir (default ".bank.db"); set writable for read-only rootfs
 	LogFormat       LogFormat     `json:"log_format,omitempty"`
 	LogLevel        LogLevel      `json:"log_level,omitempty"`
 }
@@ -196,6 +197,9 @@ func (c *Config) applyDefaults() {
 	}
 	if c.MCP.CacheTTLMinutes == 0 {
 		c.MCP.CacheTTLMinutes = 5
+	}
+	if c.MCP.CachePath == "" {
+		c.MCP.CachePath = ".bank.db"
 	}
 	if c.MCP.LogFormat == "" {
 		c.MCP.LogFormat = LogFormatText

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -42,7 +43,7 @@ func NewMCPServer(configPath string) (*MCPServer, error) {
 	}
 
 	ttl := time.Duration(cfg.MCP.CacheTTLMinutes) * time.Minute
-	bCache := bank.NewCache(".bank.db", ttl)
+	bCache := bank.NewCache(cfg.MCP.CachePath, ttl)
 
 	return &MCPServer{
 		configPath: configPath,
@@ -67,6 +68,7 @@ type GetTransactionsParams struct {
 	AccountID string `json:"account_id" jsonschema:"The unique bank account ID (UUID)"`
 	DateFrom  string `json:"date_from,omitempty" jsonschema:"Optional. Filter transactions starting from this date (format: YYYY-MM-DD)"`
 	DateTo    string `json:"date_to,omitempty" jsonschema:"Optional. Filter transactions up to this date (format: YYYY-MM-DD)"`
+	Limit     int    `json:"limit,omitempty" jsonschema:"Optional. Maximum number of transactions to return (default 50)"`
 	Refresh   bool   `json:"refresh,omitempty" jsonschema:"Optional. If true, bypasses cache and fetches fresh data"`
 }
 
@@ -104,6 +106,26 @@ func makeSuccessResult(msg string) (*mcp.CallToolResult, any, error) {
 			&mcp.TextContent{Text: msg},
 		},
 	}, nil, nil
+}
+
+func ptr[T any](v T) *T { return &v }
+
+// validateTransfer performs semantic validation beyond required-field presence.
+func validateTransfer(args InitiateTransferParams) error {
+	iban := strings.ReplaceAll(strings.ToUpper(args.CreditorIban), " ", "")
+	if len(iban) < 15 || len(iban) > 34 {
+		return fmt.Errorf("creditor_iban %q is not a valid IBAN length (15-34)", args.CreditorIban)
+	}
+	for _, r := range iban {
+		if (r < 'A' || r > 'Z') && (r < '0' || r > '9') {
+			return fmt.Errorf("creditor_iban contains invalid characters")
+		}
+	}
+	amt, err := strconv.ParseFloat(args.Amount, 64)
+	if err != nil || amt <= 0 {
+		return fmt.Errorf("amount %q must be a positive decimal", args.Amount)
+	}
+	return nil
 }
 
 // Formatting helpers for decoupled data
@@ -263,11 +285,12 @@ func (s *MCPServer) handleListTransactions(ctx context.Context, req *mcp.CallToo
 	if !args.Refresh && args.DateFrom == "" && args.DateTo == "" {
 		if detail, ok := s.cache.GetDetail(ctx, args.AccountID); ok && len(detail.Transactions) > 0 {
 			slog.DebugContext(ctx, "cache hit for transactions list", "account_id", args.AccountID, "count", len(detail.Transactions))
+			txs := capTransactions(detail.Transactions, args.Limit)
 			return &mcp.CallToolResult{
 				Content: []mcp.Content{
-					&mcp.TextContent{Text: formatTransactionsMarkdown(detail.Transactions)},
+					&mcp.TextContent{Text: formatTransactionsMarkdown(txs)},
 				},
-				StructuredContent: detail.Transactions,
+				StructuredContent: txs,
 			}, nil, nil
 		}
 	}
@@ -288,17 +311,32 @@ func (s *MCPServer) handleListTransactions(ctx context.Context, req *mcp.CallToo
 		s.cache.SetDetail(ctx, args.AccountID, detail)
 	}
 
-	md := formatTransactionsMarkdown(domainTxs)
+	md := formatTransactionsMarkdown(capTransactions(domainTxs, args.Limit))
 	return &mcp.CallToolResult{
 		Content: []mcp.Content{
 			&mcp.TextContent{Text: md},
 		},
-		StructuredContent: domainTxs,
+		StructuredContent: capTransactions(domainTxs, args.Limit),
 	}, nil, nil
+}
+
+// capTransactions limits the returned slice (default 50).
+func capTransactions(txs []bank.Transaction, limit int) []bank.Transaction {
+	if limit <= 0 {
+		limit = 50
+	}
+	if len(txs) > limit {
+		return txs[:limit]
+	}
+	return txs
 }
 
 func (s *MCPServer) handleInitiateTransfer(ctx context.Context, req *mcp.CallToolRequest, args InitiateTransferParams) (*mcp.CallToolResult, any, error) {
 	slog.InfoContext(ctx, "received tool call: initiate-transfer", "amount", args.Amount, "creditor_name", args.CreditorName)
+
+	if err := validateTransfer(args); err != nil {
+		return makeErrorResult(err.Error())
+	}
 
 	// 1. Access Control Verification
 	if s.config.MCP.AccessMode == config.ReadOnly {
@@ -477,34 +515,42 @@ func RunMCPServer(configPath string) error {
 
 	// Register hyphenated standard tools from bank-mcp
 
+	readOnly := &mcp.ToolAnnotations{ReadOnlyHint: true, OpenWorldHint: ptr(true)}
+
 	mcp.AddTool(mcpServer, &mcp.Tool{
 		Name:        "list-accounts",
-		Description: "Retrieve a list of all bank accounts accessible via the authorized session.",
+		Description: "Retrieve a list of all bank accounts accessible across the provider's connections.",
+		Annotations: readOnly,
 	}, server.handleListAccounts)
 
 	mcp.AddTool(mcpServer, &mcp.Tool{
 		Name:        "get-balances",
 		Description: "Fetch the detailed booked and available balances of a specific bank account using its unique account ID.",
+		Annotations: readOnly,
 	}, server.handleGetBalances)
 
 	mcp.AddTool(mcpServer, &mcp.Tool{
 		Name:        "list-transactions",
-		Description: "Fetch transaction history of a specific bank account with optional date filters (YYYY-MM-DD).",
+		Description: "Fetch transaction history of a specific bank account with optional date filters (YYYY-MM-DD) and a result limit.",
+		Annotations: readOnly,
 	}, server.handleListTransactions)
 
 	mcp.AddTool(mcpServer, &mcp.Tool{
 		Name:        "initiate-transfer",
-		Description: "Initiate a transfer or payment (either to another of your own accounts or to an external IBAN depending on security access modes). Returns a redirect URL for SCA.",
+		Description: "Initiate a payment (to your own account or external IBAN, subject to the server's access mode). Returns an SCA authorization URL. Moves money — destructive.",
+		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: false, DestructiveHint: ptr(true), IdempotentHint: false, OpenWorldHint: ptr(true)},
 	}, server.handleInitiateTransfer)
 
 	mcp.AddTool(mcpServer, &mcp.Tool{
 		Name:        "get-payment-status",
 		Description: "Query details and current status of an initiated payment.",
+		Annotations: readOnly,
 	}, server.handleGetPaymentStatus)
 
 	mcp.AddTool(mcpServer, &mcp.Tool{
 		Name:        "submit-transfer",
-		Description: "Submit an authorized payment for execution.",
+		Description: "Submit an authorized payment for execution. Moves money — destructive.",
+		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: false, DestructiveHint: ptr(true), IdempotentHint: true, OpenWorldHint: ptr(true)},
 	}, server.handleSubmitTransfer)
 
 	// Signal-aware context: canceled on SIGINT/SIGTERM for a graceful shutdown.

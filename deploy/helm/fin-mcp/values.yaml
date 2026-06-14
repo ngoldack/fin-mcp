@@ -1,0 +1,58 @@
+# Default values for fin-mcp.
+# The chart deploys the MCP server over the SSE (HTTP) transport — the sensible
+# choice for Kubernetes. Stdio is for local MCP clients, not a Deployment.
+
+replicaCount: 1
+
+image:
+  # Use the non-otel image by default (smaller attack surface, runs unprivileged).
+  repository: ghcr.io/ngoldack/fin-mcp/standard
+  tag: latest
+  pullPolicy: IfNotPresent
+
+# OpenTelemetry eBPF auto-instrumentation.
+# Enabling this switches to the instrumented image, which REQUIRES elevated
+# privileges (privileged container + shared process namespace).
+otel:
+  enabled: false
+  image: ghcr.io/ngoldack/fin-mcp/otel
+  tag: latest
+  serviceName: fin-mcp
+  exporterEndpoint: "http://otel-collector:4318"
+
+mcp:
+  port: 8090
+  accessMode: ReadOnly # ReadOnly | InternalOnly | Unrestricted
+  cacheTTLMinutes: 5
+  logFormat: json # text | json
+  logLevel: info
+  # Bearer token for SSE auth. If set, stored in a Secret and required on requests.
+  bearerToken: ""
+
+# Provider topology (rendered into a ConfigMap as config.json). Secrets do NOT
+# belong here — reference the mounted key via private_key_path.
+config:
+  providers:
+    - name: enable-banking
+      type: enable-banking
+      enable_banking:
+        app_id: ""
+        private_key_path: /etc/fin-mcp/keys/private.key
+        environment: SANDBOX
+        redirect_url: http://localhost:8080/callback
+        connections: []
+
+# Enable Banking application private key (PEM). Stored in a Secret and mounted at
+# /etc/fin-mcp/keys/private.key. Leave empty to manage the Secret yourself.
+privateKey:
+  content: ""
+
+service:
+  type: ClusterIP
+  port: 8090
+
+resources: {}
+podAnnotations: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}

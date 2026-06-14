@@ -58,6 +58,11 @@ Configure the exact capabilities you grant to AI Agents by modifying the `mcp.ac
 | **`InternalOnly`** | Transfers are permitted **only** if the destination IBAN matches one of your own linked bank accounts. | 🔐 High |
 | **`Unrestricted`** | Transfers are allowed to any external or domestic destination IBAN. | ⚠️ Full Access |
 
+Tools carry MCP **annotations** (`readOnlyHint` on reads; `destructiveHint` on
+`initiate-transfer`/`submit-transfer`) so clients can require confirmation for
+money-moving actions. Transfer inputs are validated (IBAN format, positive
+amount). Full details in **[SECURITY.md](SECURITY.md)**.
+
 ---
 
 ## 📂 Configuration Layout (`config.json`)
@@ -151,6 +156,36 @@ If running the server on a remote cluster or container:
   }
 }
 ```
+
+---
+
+## 🐳 Container Images & ☸️ Kubernetes
+
+Two image variants are built, scanned (Trivy), attested (SBOM + SLSA provenance)
+and Cosign-signed on every push to `main`:
+
+| Image | Use | Notes |
+|---|---|---|
+| `ghcr.io/ngoldack/fin-mcp/standard` | **Default.** | Runs **non-root**, no privileges. |
+| `ghcr.io/ngoldack/fin-mcp/otel` | OTel eBPF auto-instrumentation | Requires `privileged` + `shareProcessNamespace`. |
+
+Deploy the SSE server with the Helm chart:
+
+```bash
+helm install fin-mcp ./deploy/helm/fin-mcp \
+  --set mcp.bearerToken="$(openssl rand -hex 24)" \
+  --set privateKey.content="$(cat private.key)" \
+  --set-file config.providers=...   # or edit values.yaml
+```
+
+The chart renders the structured `providers` topology into a ConfigMap, stores
+the bearer token and private key in a Secret, mounts a writable cache
+(`emptyDir`, `MCP_CACHE_PATH`), and applies a hardened `securityContext`
+(read-only rootfs, dropped capabilities) for the standard image. Set
+`otel.enabled=true` to switch to the instrumented image (privileged).
+
+See **[SECURITY.md](SECURITY.md)** for the threat model, controls, and image
+verification with Cosign.
 
 ---
 
