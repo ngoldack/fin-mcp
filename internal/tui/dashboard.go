@@ -280,9 +280,10 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.help.ShowAll = !m.help.ShowAll
 		return m, nil
 	case key.Matches(msg, m.keys.Config):
-		if m.state == viewConfig {
+		switch m.state {
+		case viewConfig:
 			m.state = m.prevState
-		} else if m.state == viewOverview || m.state == viewDetail {
+		case viewOverview, viewDetail:
 			m.prevState = m.state
 			m.state = viewConfig
 		}
