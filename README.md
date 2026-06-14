@@ -14,7 +14,7 @@ A high-performance, modular, and enterprise-ready Go workspace implementing an O
   - Structured like a clean, beautiful mobile app (Overview -> Account Details -> Transfer).
   - High-fidelity tables built with Lipgloss.
   - Visual Help tooltips defining standardized banking abbreviations (`CLBD`, `ITBD`, etc.).
-- **Kubernetes-Ready Configuration**: Advanced config loader (`pkg/config`) merging `config.json` with dynamic **Environment Variable Overrides** and automated schema/UUID validation.
+- **Kubernetes-Ready Configuration**: Advanced config loader (`internal/config`) merging `config.json` with dynamic **Environment Variable Overrides** and automated schema/UUID validation.
 - **Enterprise-Grade MCP Server**:
   - **Dual Transport Modes**: Run over `stdio` or as a remote HTTP service using `sse` (Server-Sent Events).
   - **Token-Based Security**: Complete authorization middleware protecting SSE GET connections and POST requests.
@@ -137,25 +137,41 @@ If running the server on a remote cluster or container:
                        ┌─────────────────────────┐
                        │   Enable Banking API    │
                        └────────────┬────────────┘
-                                    │ (Raw SDK Models)
+                                    │ (Raw SDK Models — pkg/enablebanking)
                                     ▼
                        ┌─────────────────────────┐
-                       │  pkg/bank/mapping.go    │
+                       │ internal/bank/mapping.go│
                        └────────────┬────────────┘
                                     │ (Simplified Clean Domain Models)
                                     ▼
 ┌───────────────────────────────────┴───────────────────────────────────┐
-│                          pkg/bank/cache.go                            │
-│                  - Persistent bbolt DB File (.bank.db)                │
-│                  - 5-Minute Key-Value Expirations                     │
+│                       internal/bank/cache.go                          │
+│                  - Persistent BadgerDB store (.bank.db)               │
+│                  - Configurable TTL key-value expirations             │
 └───────────┬───────────────────────────────────────────┬───────────────┘
             │                                           │
             ▼                                           ▼
-┌───────────────────────┐                   ┌───────────────────────┐
-│    pkg/tui/app.go     │                   │   pkg/mcp/server.go   │
-│ (Bubble Tea Dashboard)│                   │  (Remote/Local MCP)   │
-└───────────────────────┘                   └───────────────────────┘
+┌────────────────────────┐                  ┌───────────────────────┐
+│ internal/tui/dashboard │                  │ internal/mcp/server.go│
+│ (Bubble Tea Dashboard) │                  │  (Remote/Local MCP)   │
+└────────────────────────┘                  └───────────────────────┘
 ```
+
+### Project Layout
+
+```
+cmd/enable-banking-go/   # Thin main() entrypoint
+internal/                # Private application code
+  cli/                   #   Kong command tree (Run() pattern)
+  config/                #   Config loading, env overrides & validation
+  bank/                  #   Domain models, BadgerDB cache, error mapping
+  mcp/                   #   MCP server (stdio + SSE transports)
+  setup/                 #   Non-interactive setup & key generation
+  tui/                   #   Bubble Tea dashboard, wizard & shared styles
+pkg/
+  enablebanking/         # Externally consumable Open Banking SDK
+```
+
 
 ---
 

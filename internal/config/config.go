@@ -61,7 +61,7 @@ type Config struct {
 
 func LoadConfig(path string) (*Config, error) {
 	var cfg Config
-	
+
 	// 1. Try loading from file if it exists
 	if _, err := os.Stat(path); err == nil {
 		data, err := os.ReadFile(path)

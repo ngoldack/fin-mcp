@@ -27,12 +27,12 @@ type Account struct {
 
 type Transaction struct {
 	ID               string `json:"id"`
-	Date             string `json:"date"`             // "2026-06-14"
-	Description      string `json:"description"`      // "To: Amazon", "From: Oliver Virtanen"
-	Amount           string `json:"amount"`           // "-15.50", "+120.00"
+	Date             string `json:"date"`        // "2026-06-14"
+	Description      string `json:"description"` // "To: Amazon", "From: Oliver Virtanen"
+	Amount           string `json:"amount"`      // "-15.50", "+120.00"
 	Currency         string `json:"currency"`
 	IsIncoming       bool   `json:"is_incoming"`
-	Status           string `json:"status"`           // "Completed", "Pending"
+	Status           string `json:"status"` // "Completed", "Pending"
 	CounterpartyIban string `json:"counterparty_iban"`
 }
 

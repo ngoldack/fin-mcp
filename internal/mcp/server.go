@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -11,10 +12,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/ngoldack/enable-banking-go/pkg/bank"
-	"github.com/ngoldack/enable-banking-go/pkg/config"
-	"github.com/ngoldack/enable-banking-go/pkg/enablebanking"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/ngoldack/enable-banking-go/internal/bank"
+	"github.com/ngoldack/enable-banking-go/internal/config"
+	"github.com/ngoldack/enable-banking-go/pkg/enablebanking"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -544,83 +545,68 @@ func RunMCPServer(configPath string) error {
 		Description: "Submit an authorized payment for execution.",
 	}, server.handleSubmitTransfer)
 
-	// 2. Setup Signal-aware Graceful context
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGINT)
+	// Signal-aware context: canceled on SIGINT/SIGTERM for a graceful shutdown.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	if server.config.MCP.Transport == config.TransportSSE {
+		return runSSE(ctx, mcpServer, server.config)
+	}
+	return runStdio(ctx, mcpServer)
+}
+
+// runStdio serves the MCP server over stdio. It returns cleanly when stdin
+// closes (EOF) or the context is canceled by a termination signal.
+func runStdio(ctx context.Context, mcpServer *mcp.Server) error {
+	slog.InfoContext(ctx, "starting Enable Banking MCP Server over stdio")
+	if err := mcpServer.Run(ctx, &mcp.StdioTransport{}); err != nil && !errors.Is(err, context.Canceled) {
+		return fmt.Errorf("stdio server error: %w", err)
+	}
+	slog.Info("MCP server stopped")
+	return nil
+}
+
+// runSSE serves the MCP server over HTTP/SSE behind a bearer-token guard, with a
+// graceful shutdown driven by the signal-aware context.
+func runSSE(ctx context.Context, mcpServer *mcp.Server, cfg *config.Config) error {
+	port := cfg.MCP.Port
+	if port == 0 {
+		port = 8090 // Default SSE port
+	}
+
+	handler := mcp.NewSSEHandler(func(*http.Request) *mcp.Server { return mcpServer }, nil)
+	mux := http.NewServeMux()
+	mux.Handle("/", authMiddleware(handler, cfg.MCP.BearerToken))
+
+	httpServer := &http.Server{
+		Addr:              fmt.Sprintf(":%d", port),
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
 
 	g, gCtx := errgroup.WithContext(ctx)
 
-	// Determine Transport Type
-	if server.config.MCP.Transport == config.TransportSSE {
-		port := server.config.MCP.Port
-		if port == 0 {
-			port = 8090 // Default SSE port
-		}
-
-		handler := mcp.NewSSEHandler(func(req *http.Request) *mcp.Server {
-			return mcpServer
-		}, nil)
-
-		mux := http.NewServeMux()
-		secureHandler := authMiddleware(handler, server.config.MCP.BearerToken)
-		mux.Handle("/", secureHandler)
-
-		addr := fmt.Sprintf(":%d", port)
-		
-		httpServer := &http.Server{
-			Addr:    addr,
-			Handler: mux,
-		}
-
-		// Group goroutine 1: Run HTTP server
-		g.Go(func() error {
-			slog.InfoContext(gCtx, "starting Enable Banking MCP Server over HTTPS/SSE", "addr", addr)
-			if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-				return fmt.Errorf("HTTP server ListenAndServe error: %w", err)
-			}
-			return nil
-		})
-
-		// Group goroutine 2: Monitor context cancellation for graceful shutdown
-		g.Go(func() error {
-			<-gCtx.Done()
-			slog.Info("shutting down HTTP server gracefully...")
-			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			return httpServer.Shutdown(shutdownCtx)
-		})
-
-		// Wait for goroutines to complete
-		if err := g.Wait(); err != nil {
-			return fmt.Errorf("MCP server runtime error: %w", err)
-		}
-		
-		slog.Info("MCP server successfully stopped.")
-		return nil
-	}
-
-	// Stdio Transport
-	slog.InfoContext(gCtx, "starting Enable Banking MCP Server over Stdio")
-
-	// Group goroutine 1: Run Stdio server
+	// Serve until the server is shut down.
 	g.Go(func() error {
-		if err := mcpServer.Run(gCtx, &mcp.StdioTransport{}); err != nil {
-			return fmt.Errorf("stdio server run error: %w", err)
+		slog.InfoContext(gCtx, "starting Enable Banking MCP Server over HTTP/SSE", "addr", httpServer.Addr)
+		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			return fmt.Errorf("http server error: %w", err)
 		}
 		return nil
 	})
 
-	// Group goroutine 2: Monitor signal cancellation for Stdio
+	// Trigger a graceful shutdown when the context is canceled (signal).
 	g.Go(func() error {
 		<-gCtx.Done()
-		slog.Info("shutting down Stdio server gracefully...")
-		return nil
+		slog.Info("shutting down HTTP server gracefully...")
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		return httpServer.Shutdown(shutdownCtx)
 	})
 
-	if err := g.Wait(); err != nil {
+	if err := g.Wait(); err != nil && !errors.Is(err, context.Canceled) {
 		return fmt.Errorf("MCP server runtime error: %w", err)
 	}
-
-	slog.Info("MCP server successfully stopped.")
+	slog.Info("MCP server stopped")
 	return nil
 }

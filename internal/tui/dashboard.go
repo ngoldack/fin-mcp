@@ -8,66 +8,14 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/ngoldack/enable-banking-go/pkg/bank"
-	"github.com/ngoldack/enable-banking-go/pkg/config"
+	"github.com/ngoldack/enable-banking-go/internal/bank"
+	"github.com/ngoldack/enable-banking-go/internal/config"
 	"github.com/ngoldack/enable-banking-go/pkg/enablebanking"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/lipgloss/table"
-)
-
-// TUI Styles
-var (
-	accentColor  = lipgloss.Color("63") // Violet
-	textColor    = lipgloss.Color("255")
-	errorColor   = lipgloss.Color("196")
-	successColor = lipgloss.Color("40")
-	grayColor    = lipgloss.Color("242")
-	amberColor   = lipgloss.Color("214")
-
-	titleStyle = lipgloss.NewStyle().
-			Bold(true).
-			Foreground(textColor).
-			Background(accentColor).
-			Padding(0, 1).
-			MarginBottom(1)
-
-	headerStyle = lipgloss.NewStyle().
-			Bold(true).
-			Foreground(accentColor).
-			Underline(true)
-
-	selectedStyle = lipgloss.NewStyle().
-			Bold(true).
-			Foreground(textColor).
-			Background(accentColor)
-
-	normalStyle = lipgloss.NewStyle().
-			Foreground(textColor)
-
-	errorStyle = lipgloss.NewStyle().
-			Bold(true).
-			Foreground(errorColor)
-
-	successStyle = lipgloss.NewStyle().
-			Bold(true).
-			Foreground(successColor)
-
-	boxStyle = lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(accentColor).
-			Padding(1, 2).
-			MarginBottom(1)
-
-	helpStyle = lipgloss.NewStyle().
-			Foreground(grayColor).
-			Italic(true)
-
-	tipStyle = lipgloss.NewStyle().
-			Foreground(amberColor).
-			Italic(true)
 )
 
 // State Constants
@@ -95,10 +43,10 @@ type Model struct {
 	showAbbreviationsHelp bool
 
 	// Transfer inputs
-	inputs             []textinput.Model
-	focusedInputIdx    int
-	transferLoading    bool
-	paymentResp        *enablebanking.CreatePaymentResponse
+	inputs          []textinput.Model
+	focusedInputIdx int
+	transferLoading bool
+	paymentResp     *enablebanking.CreatePaymentResponse
 }
 
 // Bubble Tea Messages
@@ -547,7 +495,7 @@ func (m *Model) View() string {
 		a := m.accounts[m.selectedAccountIdx]
 
 		s += headerStyle.Render("💳 ACTIVE DEBIT CARD") + "\n"
-		
+
 		// Render virtual debit card
 		balStr := "--.--"
 		if a.AvailableBalance != "" {
@@ -566,9 +514,9 @@ func (m *Model) View() string {
 
 		cardContent := fmt.Sprintf(
 			"🏦 %-38s\n\n"+
-			"   %-38s\n"+
-			"   %-38s\n\n"+
-			"   Balance: %s %s",
+				"   %-38s\n"+
+				"   %-38s\n\n"+
+				"   Balance: %s %s",
 			m.cfg.EnableBanking.BankName,
 			a.Name,
 			lipgloss.NewStyle().Foreground(grayColor).Render(a.IBAN),

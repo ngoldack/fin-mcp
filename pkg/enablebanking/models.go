@@ -70,10 +70,10 @@ type AuthorizeSessionResponse struct {
 }
 
 type GetSessionResponse struct {
-	SessionID string            `json:"session_id"`
-	Status    string            `json:"status"` // "AUTHORIZED", "EXPIRED", etc.
-	Accounts  []string          `json:"accounts"`
-	Aspsp     ASPSP             `json:"aspsp"`
+	SessionID string   `json:"session_id"`
+	Status    string   `json:"status"` // "AUTHORIZED", "EXPIRED", etc.
+	Accounts  []string `json:"accounts"`
+	Aspsp     ASPSP    `json:"aspsp"`
 	Access    struct {
 		ValidUntil time.Time `json:"valid_until"`
 	} `json:"access"`
@@ -101,20 +101,20 @@ type PartyIdentification struct {
 }
 
 type Transaction struct {
-	TransactionID        string                 `json:"transaction_id,omitempty"`
-	EntryReference       string                 `json:"entry_reference,omitempty"`
-	TransactionAmount    AmountType             `json:"transaction_amount"`
-	Creditor             *PartyIdentification   `json:"creditor,omitempty"`
-	CreditorAccount      *AccountIdentification `json:"creditor_account,omitempty"`
-	Debtor               *PartyIdentification   `json:"debtor,omitempty"`
-	DebtorAccount        *AccountIdentification `json:"debtor_account,omitempty"`
-	CreditDebitIndicator string                 `json:"credit_debit_indicator"` // "CRDT" or "DBIT"
-	Status               string                 `json:"status"`                 // "BOOK", "PDNG"
-	BookingDate          string                 `json:"booking_date,omitempty"`
-	ValueDate            string                 `json:"value_date,omitempty"`
-	TransactionDate      string                 `json:"transaction_date,omitempty"`
-	ReferenceNumber      string                 `json:"reference_number,omitempty"`
-	RemittanceInformation []string              `json:"remittance_information,omitempty"`
+	TransactionID         string                 `json:"transaction_id,omitempty"`
+	EntryReference        string                 `json:"entry_reference,omitempty"`
+	TransactionAmount     AmountType             `json:"transaction_amount"`
+	Creditor              *PartyIdentification   `json:"creditor,omitempty"`
+	CreditorAccount       *AccountIdentification `json:"creditor_account,omitempty"`
+	Debtor                *PartyIdentification   `json:"debtor,omitempty"`
+	DebtorAccount         *AccountIdentification `json:"debtor_account,omitempty"`
+	CreditDebitIndicator  string                 `json:"credit_debit_indicator"` // "CRDT" or "DBIT"
+	Status                string                 `json:"status"`                 // "BOOK", "PDNG"
+	BookingDate           string                 `json:"booking_date,omitempty"`
+	ValueDate             string                 `json:"value_date,omitempty"`
+	TransactionDate       string                 `json:"transaction_date,omitempty"`
+	ReferenceNumber       string                 `json:"reference_number,omitempty"`
+	RemittanceInformation []string               `json:"remittance_information,omitempty"`
 }
 
 type HalTransactions struct {

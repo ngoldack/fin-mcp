@@ -1,75 +1,87 @@
+# syntax=docker/dockerfile:1
+#
+# BuildKit-optimized multi-stage build for the Enable Banking suite.
+# Requires BuildKit (default in modern Docker / `docker buildx`).
+#
+# Cache mounts (`--mount=type=cache`) keep the Go module cache and the Go build
+# cache warm across builds, dramatically speeding up incremental rebuilds without
+# bloating image layers.
+
 # =========================================================================
-# Stage 1: Copy the official OpenTelemetry Go Auto-Instrumentation Agent
+# Stage 1: Pull the official OpenTelemetry Go eBPF Auto-Instrumentation agent
 # =========================================================================
 FROM ghcr.io/open-telemetry/opentelemetry-go-instrumentation/autoinstrumentation-go:v0.15.0-alpha AS otel-agent
 
 # =========================================================================
-# Stage 2: Build the clean Go application
+# Stage 2: Build the Go application
 # =========================================================================
 FROM golang:1.26-alpine AS builder
 WORKDIR /app
 
+# Pin Go cache locations so the BuildKit cache mounts below target them precisely.
+ENV GOMODCACHE=/go/pkg/mod
+ENV GOCACHE=/root/.cache/go-build
+
+# 1. Download dependencies first (best layer caching: only re-runs when go.mod/go.sum change).
+#    The module cache mount avoids re-downloading modules on every build.
 COPY go.mod go.sum ./
-RUN go mod download
+RUN --mount=type=cache,target=/go/pkg/mod \
+    go mod download
 
+# 2. Build the binary. Both the module cache and the build cache are mounted so that
+#    unchanged packages are never recompiled.
 COPY . .
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 go build -o /out/enable-banking-go ./cmd/enable-banking-go
 
-# CRITICAL SECURITY & INSTRUMENTATION NOTE:
-# Do NOT strip the binary with "-ldflags='-s -w'"! The eBPF auto-instrumentation
-# agent requires the Go symbol table to remain fully intact to dynamically
-# locate and hook function boundaries at runtime.
-RUN CGO_ENABLED=0 go build -o enable-banking-go ./cmd/enable-banking-go
+# NOTE: We intentionally do NOT strip the binary (no "-ldflags=-s -w").
+# The eBPF auto-instrumentation agent requires the Go symbol table to remain
+# intact so it can dynamically locate and hook function boundaries at runtime.
 
 # =========================================================================
-# Stage 3: Standard Runtime (Clean / Non-Instrumented Stage)
+# Stage 3: Standard Runtime (clean, non-instrumented)
 # =========================================================================
-# To build this stage specifically, run:
-#   docker build --target standard-runtime -t enable-banking-go:standard .
+# Build explicitly with:  docker build --target standard-runtime -t enable-banking-go:standard .
 FROM alpine:latest AS standard-runtime
 
-# libc6-compat is required for musl/glibc compatibility on Alpine
-RUN apk add --no-cache libc6-compat ca-certificates
+RUN apk add --no-cache ca-certificates
 
 WORKDIR /app
+COPY --from=builder /out/enable-banking-go .
 
-# Copy our pure Go application
-COPY --from=builder /app/enable-banking-go .
-
+# Configuration is supplied at runtime via env vars or a mounted file (12-factor / K8s).
 ENTRYPOINT ["./enable-banking-go"]
 CMD ["server", "--config", "/etc/enable-banking/config.json"]
 
 # =========================================================================
-# Stage 4: Instrumented Runtime (OTel Auto-Instrumented Stage)
+# Stage 4: Instrumented Runtime (OTel eBPF Auto-Instrumented)
 # =========================================================================
-# To build this stage specifically, run:
-#   docker build --target instrumented-runtime -t enable-banking-go:otel .
+# Build explicitly with:  docker build --target instrumented-runtime -t enable-banking-go:otel .
 #
-# CRITICAL DOCKER/K8S EXECUTION NOTE:
-# Because eBPF probes inspect kernel-level system calls, running this container
-# in production requires elevated privileges.
-# In Docker, run with: `--privileged` or `--cap-add=SYS_ADMIN`
-# In Kubernetes, specify: `securityContext.privileged: true` or add `SYS_ADMIN` capability.
+# eBPF probes inspect kernel-level syscalls, so this container needs elevated privileges:
+#   Docker:      --privileged   (or --cap-add=SYS_ADMIN --cap-add=SYS_RESOURCE --pid=host)
+#   Kubernetes:  securityContext.privileged: true  +  shareProcessNamespace: true
 FROM alpine:latest AS instrumented-runtime
 
-# libc6-compat is required for musl/glibc compatibility on Alpine
-RUN apk add --no-cache libc6-compat ca-certificates
+# libc6-compat lets the glibc-built agent run on musl-based Alpine.
+RUN apk add --no-cache ca-certificates libc6-compat
 
 WORKDIR /app
+COPY --from=builder /out/enable-banking-go ./enable-banking-go
 
-# Copy our pure Go application
-COPY --from=builder /app/enable-banking-go .
+# The agent binary lives at the image root in the official image.
+COPY --from=otel-agent /otel-go-instrumentation /otel-go-instrumentation
 
-# Copy the OTel Auto-Instrumentation agent
-COPY --from=otel-agent /instrumentation/otel-go-instrumentation .
+# Entrypoint launches the app and attaches the eBPF agent to it.
+COPY docker/instrumented-entrypoint.sh /usr/local/bin/instrumented-entrypoint.sh
+RUN chmod +x /usr/local/bin/instrumented-entrypoint.sh
 
-# Standard OpenTelemetry environment variables (can be overridden by K8s / compose)
+# Standard OpenTelemetry environment (override via K8s / compose at runtime).
 ENV OTEL_SERVICE_NAME=enable-banking-mcp
 ENV OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
-
-# CRITICAL AUTO-INSTRUMENTATION SPECIFICATION:
-# The OTel Go Auto-Instrumentation agent requires the exact path of the target
-# executable to dynamically hook and trace functions.
+# The eBPF agent attaches to the target binary identified by this exact path.
 ENV OTEL_GO_AUTO_TARGET_EXE=/app/enable-banking-go
 
-ENTRYPOINT ["./otel-go-instrumentation", "./enable-banking-go"]
+ENTRYPOINT ["/usr/local/bin/instrumented-entrypoint.sh"]
 CMD ["server", "--config", "/etc/enable-banking/config.json"]

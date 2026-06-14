@@ -102,7 +102,7 @@ func TestClient_RequiredFields(t *testing.T) {
 
 func TestClient_GetASPSPs_Mocked(t *testing.T) {
 	keyPath := generateTestRSAKey(t)
-	
+
 	// Create mock HTTP server
 	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "GET" || r.URL.Path != "/aspsps" {

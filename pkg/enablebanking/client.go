@@ -16,18 +16,18 @@ import (
 
 // Predefined validation errors for SDK consumers
 var (
-	ErrMissingAppID          = errors.New("missing required field: AppID")
-	ErrMissingAspspName      = errors.New("missing required field: ASPSP Name")
-	ErrMissingAspspCountry   = errors.New("missing required field: ASPSP Country")
-	ErrMissingState          = errors.New("missing required field: State")
-	ErrMissingRedirectURL    = errors.New("missing required field: RedirectURL")
-	ErrMissingCode             = errors.New("missing required field: Code")
-	ErrMissingSessionID      = errors.New("missing required field: SessionID")
-	ErrMissingAccountID      = errors.New("missing required field: AccountID")
-	ErrMissingPaymentID      = errors.New("missing required field: PaymentID")
-	ErrMissingCreditorIban   = errors.New("missing required field: CreditorIBAN")
-	ErrMissingCreditorName   = errors.New("missing required field: CreditorName")
-	ErrMissingAmount         = errors.New("missing required field: Amount")
+	ErrMissingAppID        = errors.New("missing required field: AppID")
+	ErrMissingAspspName    = errors.New("missing required field: ASPSP Name")
+	ErrMissingAspspCountry = errors.New("missing required field: ASPSP Country")
+	ErrMissingState        = errors.New("missing required field: State")
+	ErrMissingRedirectURL  = errors.New("missing required field: RedirectURL")
+	ErrMissingCode         = errors.New("missing required field: Code")
+	ErrMissingSessionID    = errors.New("missing required field: SessionID")
+	ErrMissingAccountID    = errors.New("missing required field: AccountID")
+	ErrMissingPaymentID    = errors.New("missing required field: PaymentID")
+	ErrMissingCreditorIban = errors.New("missing required field: CreditorIBAN")
+	ErrMissingCreditorName = errors.New("missing required field: CreditorName")
+	ErrMissingAmount       = errors.New("missing required field: Amount")
 )
 
 type APIClient interface {

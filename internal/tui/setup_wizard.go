@@ -10,9 +10,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ngoldack/enable-banking-go/pkg/config"
+	"github.com/ngoldack/enable-banking-go/internal/config"
+	"github.com/ngoldack/enable-banking-go/internal/setup"
 	"github.com/ngoldack/enable-banking-go/pkg/enablebanking"
-	"github.com/ngoldack/enable-banking-go/pkg/setup"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -56,24 +56,24 @@ const (
 )
 
 type SetupModel struct {
-	configPath         string
-	step               int
-	err                error
-	loading            bool
-	statusMsg          string
-	cfg                *config.Config
-	client             enablebanking.APIClient
+	configPath string
+	step       int
+	err        error
+	loading    bool
+	statusMsg  string
+	cfg        *config.Config
+	client     enablebanking.APIClient
 
 	// Step 0: Choice
-	keypairChoiceIdx   int // 0: Existing, 1: Generate
+	keypairChoiceIdx int // 0: Existing, 1: Generate
 
 	// Step 1: Credentials
-	appIDInput         textinput.Model
-	keyPathInput       textinput.Model
-	redirectURLInput   textinput.Model
-	focusedInputIdx    int // 0: App ID, 1: Key Path, 2: Redirect URL, 3: Environment Toggle
-	envSelectedIdx     int // 0: SANDBOX, 1: PRODUCTION
-	keysGenerated      bool
+	appIDInput       textinput.Model
+	keyPathInput     textinput.Model
+	redirectURLInput textinput.Model
+	focusedInputIdx  int // 0: App ID, 1: Key Path, 2: Redirect URL, 3: Environment Toggle
+	envSelectedIdx   int // 0: SANDBOX, 1: PRODUCTION
+	keysGenerated    bool
 
 	// Step 2 & 3: Country / Bank select
 	selectedCountryIdx int
@@ -83,12 +83,12 @@ type SetupModel struct {
 	selectedBankIdx    int
 
 	// Step 4: Redirect
-	authResp           *enablebanking.StartAuthorizationResponse
-	serverChan         chan string
-	localServer        *http.Server
+	authResp    *enablebanking.StartAuthorizationResponse
+	serverChan  chan string
+	localServer *http.Server
 
 	// Step 5: Code exchange
-	codeInput          textinput.Model
+	codeInput textinput.Model
 }
 
 func NewSetupModel(configPath string) *SetupModel {
@@ -116,17 +116,17 @@ func NewSetupModel(configPath string) *SetupModel {
 	redirectURL.CharLimit = 150
 
 	return &SetupModel{
-		configPath:       configPath,
-		step:            stepKeypairChoice,
-		keypairChoiceIdx: 0,
-		appIDInput:      appID,
-		keyPathInput:    keyPath,
-		redirectURLInput: redirectURL,
-		focusedInputIdx: 0,
-		envSelectedIdx:  0, // SANDBOX
+		configPath:         configPath,
+		step:               stepKeypairChoice,
+		keypairChoiceIdx:   0,
+		appIDInput:         appID,
+		keyPathInput:       keyPath,
+		redirectURLInput:   redirectURL,
+		focusedInputIdx:    0,
+		envSelectedIdx:     0, // SANDBOX
 		selectedCountryIdx: 0,
-		codeInput:       code,
-		bankSearchInput: bankSearch,
+		codeInput:          code,
+		bankSearchInput:    bankSearch,
 	}
 }
 
@@ -431,11 +431,12 @@ func (m *SetupModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-		if m.focusedInputIdx == 0 {
+		switch m.focusedInputIdx {
+		case 0:
 			m.appIDInput, cmd = m.appIDInput.Update(msg)
-		} else if m.focusedInputIdx == 1 {
+		case 1:
 			m.keyPathInput, cmd = m.keyPathInput.Update(msg)
-		} else if m.focusedInputIdx == 2 {
+		case 2:
 			m.redirectURLInput, cmd = m.redirectURLInput.Update(msg)
 		}
 		return m, cmd
@@ -491,7 +492,7 @@ func (m *SetupModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// Update search input
 		m.bankSearchInput, cmd = m.bankSearchInput.Update(msg)
-		
+
 		// Update filtered list in real-time
 		query := strings.ToLower(m.bankSearchInput.Value())
 		m.filteredBanks = nil
@@ -566,7 +567,7 @@ func (m *SetupModel) View() string {
 	switch m.step {
 	case stepKeypairChoice:
 		s += headerStyle.Render("Welcome! Choose your Application Setup:") + "\n\n"
-		
+
 		choices := []string{
 			"Use an Existing Keypair & App ID\n   (Select this if you already have an application registered on enablebanking.com)",
 			"Generate a New Keypair & Certificate\n   (Select this if you do not have an application yet. We will generate keys for you)",
@@ -585,25 +586,25 @@ func (m *SetupModel) View() string {
 
 	case stepSummary:
 		s += headerStyle.Render("Setup Steps Summary") + "\n\n"
-		
+
 		if m.keypairChoiceIdx == 0 {
 			s += boxStyle.Render(
 				"We will go through the following steps to configure your bank:\n\n"+
-				"1. Enter existing Application Credentials (App ID & Private Key Path).\n"+
-				"2. Select Country & Choose your Bank (ASPSP).\n"+
-				"3. Secure Redirection: Log in to your bank to authorize the session.\n"+
-				"4. Code Exchange: Retrieve and save authorized bank details.\n\n"+
-				"Ready? Press [Enter] to start!") + "\n\n"
+					"1. Enter existing Application Credentials (App ID & Private Key Path).\n"+
+					"2. Select Country & Choose your Bank (ASPSP).\n"+
+					"3. Secure Redirection: Log in to your bank to authorize the session.\n"+
+					"4. Code Exchange: Retrieve and save authorized bank details.\n\n"+
+					"Ready? Press [Enter] to start!") + "\n\n"
 		} else {
 			s += boxStyle.Render(
 				"We will go through the following steps to generate keys and link your bank:\n\n"+
-				"1. Generate Keypair: We automatically write 'private.key' and 'public.crt'.\n"+
-				"2. Register Application: Upload 'public.crt' to the Enable Banking dashboard.\n"+
-				"3. Enter App ID: Paste the newly assigned App ID assigned by the control panel.\n"+
-				"4. Select Country & Choose your Bank (ASPSP).\n"+
-				"5. Secure Redirection: Log in to your bank to authorize the session.\n"+
-				"6. Code Exchange: Retrieve and save authorized bank details.\n\n"+
-				"Ready? Press [Enter] to generate keys and proceed!") + "\n\n"
+					"1. Generate Keypair: We automatically write 'private.key' and 'public.crt'.\n"+
+					"2. Register Application: Upload 'public.crt' to the Enable Banking dashboard.\n"+
+					"3. Enter App ID: Paste the newly assigned App ID assigned by the control panel.\n"+
+					"4. Select Country & Choose your Bank (ASPSP).\n"+
+					"5. Secure Redirection: Log in to your bank to authorize the session.\n"+
+					"6. Code Exchange: Retrieve and save authorized bank details.\n\n"+
+					"Ready? Press [Enter] to generate keys and proceed!") + "\n\n"
 		}
 		s += helpStyle.Render("[Enter] Proceed  |  [Esc] Back  |  [Q] Quit")
 
@@ -611,17 +612,17 @@ func (m *SetupModel) View() string {
 		if m.keypairChoiceIdx == 1 {
 			// Generate Keypair Flow
 			s += headerStyle.Render("Step 1: Keys Generated & App Registration Required") + "\n\n"
-			
+
 			redirectVal := strings.TrimSpace(m.redirectURLInput.Value())
 			regURL := fmt.Sprintf("https://enablebanking.com/cp/applications?name=Enable+Banking+Go+MCP&redirect_urls=%s&environment=SANDBOX", strings.ReplaceAll(redirectVal, "/", "%2F"))
-			
+
 			s += boxStyle.Render(
 				"🔑 Secure Private Key written to: private.key\n"+
-				"📜 Public Certificate written to: public.crt\n\n"+
-				"ACTION REQUIRED:\n"+
-				"1. Register a new application at:\n   "+regURL+"\n"+
-				"2. Upload the contents of your generated 'public.crt' file (shown below).\n"+
-				"3. Copy your newly assigned Application ID and paste it below.") + "\n\n"
+					"📜 Public Certificate written to: public.crt\n\n"+
+					"ACTION REQUIRED:\n"+
+					"1. Register a new application at:\n   "+regURL+"\n"+
+					"2. Upload the contents of your generated 'public.crt' file (shown below).\n"+
+					"3. Copy your newly assigned Application ID and paste it below.") + "\n\n"
 
 			certContent := "[Could not read public.crt]"
 			if certBytes, err := os.ReadFile("public.crt"); err == nil {
@@ -631,7 +632,7 @@ func (m *SetupModel) View() string {
 			s += lipgloss.NewStyle().Foreground(accentColor).Render("--------------------------------------------------------------------------------") + "\n"
 			s += certContent + "\n"
 			s += lipgloss.NewStyle().Foreground(accentColor).Render("--------------------------------------------------------------------------------") + "\n\n"
-			
+
 			s += helpStyle.Render("👉 Press [O] on App ID or Redirect URL field to open the Control Panel in your browser.") + "\n\n"
 
 			// Render App ID Input
@@ -704,7 +705,7 @@ func (m *SetupModel) View() string {
 
 	case stepBankFetch:
 		s += "Step 2: Select the country of your bank\n\n"
-		
+
 		for i, country := range countryOptions {
 			cursor := "  "
 			style := normalStyle
@@ -720,7 +721,7 @@ func (m *SetupModel) View() string {
 	case stepBankSelect:
 		selectedCountry := countryOptions[m.selectedCountryIdx]
 		s += fmt.Sprintf("Step 3: Select your bank for %s (%s)\n\n", selectedCountry.Name, selectedCountry.Code)
-		
+
 		// Render search input
 		s += "🔍 Search: " + m.bankSearchInput.View() + "\n"
 		s += helpStyle.Render(fmt.Sprintf("  (matching %d of %d banks)\n", len(m.filteredBanks), len(m.banks))) + "\n"

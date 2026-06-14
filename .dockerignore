@@ -1,0 +1,42 @@
+# Keep the Docker build context small, fast, and free of secrets.
+# Only go.mod/go.sum, source packages, and the docker/ entrypoint are needed.
+
+# VCS & CI
+.git
+.github
+.gitignore
+
+# Docs & tooling
+*.md
+Taskfile.yml
+LICENSE
+
+# Build artifacts & binaries
+enable-banking-go
+enable-banking-mcp
+*.exe
+dist/
+bin/
+/out/
+
+# Local runtime state, caches & databases
+.bank.db/
+*.db
+*.log
+
+# Secrets & credentials (must NEVER enter the build context)
+config.json
+*.pem
+*.key
+*.crt
+
+# Go test / coverage output
+*.test
+*.out
+*.prof
+junit-report.xml
+
+# Editor / OS noise
+.DS_Store
+.idea/
+.vscode/

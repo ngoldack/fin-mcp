@@ -2,9 +2,9 @@ name: CI & Secure Delivery Pipeline
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   pull_request:
-    branches: [ main ]
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -13,10 +13,19 @@ permissions:
   id-token: write        # CRITICAL: Required for Cosign keyless signing via OIDC!
   security-events: write # Required to upload Trivy SARIF reports
 
+# Cancel superseded runs on the same ref to save CI minutes.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GO_VERSION: '1.26'
+
 jobs:
   lint:
     name: Code Quality & Linting
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Checkout Code
         uses: actions/checkout@v6
@@ -24,18 +33,20 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version: '1.26'
+          go-version: ${{ env.GO_VERSION }}
           cache: true
 
       - name: Run golangci-lint
         uses: golangci/golangci-lint-action@v9
         with:
-          version: latest
+          # Pinned for reproducibility — avoids surprise failures from new checks in "latest".
+          version: v2.12.2
           args: --timeout=5m
 
   test:
     name: Unit & Integration Tests
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Checkout Code
         uses: actions/checkout@v6
@@ -43,29 +54,30 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version: '1.26'
+          go-version: ${{ env.GO_VERSION }}
           cache: true
 
       - name: Install gotestsum
         run: go install gotest.tools/gotestsum@latest
 
       - name: Run Tests with gotestsum
-        run: |
-          gotestsum --junitfile junit-report.xml --format pkgname -- -v ./...
+        run: gotestsum --junitfile junit-report.xml --format pkgname -- -race -v ./...
 
       - name: Upload JUnit Test Results
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
+        if: always()
         with:
           name: junit-test-results
           path: junit-report.xml
-        if: always()
 
   build-and-deliver:
     name: Secure Build & Deliver
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     env:
       REGISTRY: ghcr.io
       IMAGE_BASE: ghcr.io/${{ github.repository }}
+      SCAN_TAG: enable-banking-otel:scan
     steps:
       - name: Checkout Code
         uses: actions/checkout@v6
@@ -77,51 +89,65 @@ jobs:
         uses: sigstore/cosign-installer@v4.1.0
 
       - name: Log in to GHCR
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
 
-      # =========================================================================
-      # INSTRUMENTED (OTEL) RUNTIME IMAGE (ONLY TARGET BUILT)
-      # =========================================================================
-      - name: Build Instrumented OTel Image with Buildkit Attestations
-        id: build-otel
+      # ----------------------------------------------------------------------
+      # 1. Build a local (loadable) image so Trivy can scan it on EVERY event.
+      #    Attestations are omitted here because they produce an OCI index that
+      #    cannot be loaded into the Docker daemon.
+      # ----------------------------------------------------------------------
+      - name: Build Instrumented OTel Image (local, for scanning)
         uses: docker/build-push-action@v7
         with:
           context: .
           target: instrumented-runtime
-          push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-          tags: |
-            ${{ env.IMAGE_BASE }}/otel:latest
-            ${{ env.IMAGE_BASE }}/otel:${{ github.sha }}
-          # Buildkit Attestations: Generates and attaches SBOM & SLSA Provenance
-          # directly to the OCI Index Manifest!
-          sbom: true
-          provenance: mode=max
+          load: true
+          tags: ${{ env.SCAN_TAG }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
       - name: Scan OTel Image (Trivy)
         uses: aquasecurity/trivy-action@v0.36.0
         with:
-          image-ref: ${{ env.IMAGE_BASE }}/otel:latest
+          image-ref: ${{ env.SCAN_TAG }}
           format: sarif
           output: trivy-otel.sarif
           severity: 'CRITICAL,HIGH'
+          exit-code: '0' # Report findings to the Security tab without blocking the pipeline.
 
       - name: Upload OTel Trivy Scan Results
         uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: trivy-otel.sarif
           category: trivy-otel
-        if: always()
+
+      # ----------------------------------------------------------------------
+      # 2. On main: build + push WITH SBOM/SLSA attestations (cache-accelerated),
+      #    then sign the whole OCI index by digest with Cosign (keyless/OIDC).
+      # ----------------------------------------------------------------------
+      - name: Build & Push Instrumented OTel Image (with Buildkit Attestations)
+        id: build-push
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          target: instrumented-runtime
+          push: true
+          tags: |
+            ${{ env.IMAGE_BASE }}/otel:latest
+            ${{ env.IMAGE_BASE }}/otel:${{ github.sha }}
+          # Generates & attaches SBOM + SLSA Provenance directly to the OCI Index Manifest.
+          sbom: true
+          provenance: mode=max
+          cache-from: type=gha
 
       - name: Sign OTel Image & Attestations (Cosign)
-        # Signing by digest signs the entire OCI Index Manifest, securing both
-        # the image layers and all attached Buildkit attestations (SBOM & Provenance)!
-        run: |
-          cosign sign --yes "${{ env.IMAGE_BASE }}/otel@${{ steps.build-otel.outputs.digest }}"
+        # Signing by digest signs the entire OCI Index Manifest, securing the image
+        # layers and all attached Buildkit attestations (SBOM & Provenance).
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: cosign sign --yes "${{ env.IMAGE_BASE }}/otel@${{ steps.build-push.outputs.digest }}"

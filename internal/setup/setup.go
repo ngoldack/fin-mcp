@@ -17,9 +17,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ngoldack/enable-banking-go/pkg/config"
-	"github.com/ngoldack/enable-banking-go/pkg/enablebanking"
 	"github.com/mattn/go-isatty"
+	"github.com/ngoldack/enable-banking-go/internal/config"
+	"github.com/ngoldack/enable-banking-go/pkg/enablebanking"
 )
 
 func GenerateRSAKeyAndCertificate(keyPath, certPath string) error {
