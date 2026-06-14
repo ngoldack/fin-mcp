@@ -53,4 +53,14 @@ var (
 	tipStyle = lipgloss.NewStyle().
 			Foreground(amberColor).
 			Italic(true)
+
+	labelStyle = lipgloss.NewStyle().
+			Foreground(grayColor).
+			Bold(true)
+
+	statusBoxStyle = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(grayColor).
+			Padding(0, 1).
+			MarginBottom(1)
 )

@@ -3,74 +3,108 @@ package tui
 import (
 	"context"
 	"fmt"
-	"os/exec"
-	"runtime"
-	"strconv"
+	"strings"
 	"time"
+
+	"github.com/charmbracelet/bubbles/help"
+	"github.com/charmbracelet/bubbles/key"
+	"github.com/charmbracelet/bubbles/list"
+	"github.com/charmbracelet/bubbles/spinner"
+	"github.com/charmbracelet/bubbles/table"
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/ngoldack/enable-banking-go/internal/bank"
 	"github.com/ngoldack/enable-banking-go/internal/config"
 	"github.com/ngoldack/enable-banking-go/pkg/enablebanking"
-
-	"github.com/charmbracelet/bubbles/textinput"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
-	"github.com/charmbracelet/lipgloss/table"
 )
 
-// State Constants
+// viewState enumerates the operator-console screens.
+type viewState int
+
 const (
-	stateLoading        = "loading"
-	stateAccounts       = "accounts"
-	stateAccountDetail  = "account_detail"
-	stateTransfer       = "transfer"
-	stateTransferResult = "transfer_result"
-	stateError          = "error"
+	viewLoading viewState = iota
+	viewOverview
+	viewDetail
+	viewConfig
+	viewError
 )
 
-type Model struct {
-	configPath            string
-	cfg                   *config.Config
-	client                enablebanking.APIClient
-	cache                 *bank.Cache
-	state                 string
-	statusMessage         string
-	err                   error
-	accounts              []bank.Account
-	selectedAccountIdx    int
-	balances              []bank.AccountBalance
-	transactions          []bank.Transaction
-	showAbbreviationsHelp bool
-
-	// Transfer inputs
-	inputs          []textinput.Model
-	focusedInputIdx int
-	transferLoading bool
-	paymentResp     *enablebanking.CreatePaymentResponse
+// accountItem adapts a bank.Account to the bubbles/list Item interface.
+type accountItem struct {
+	acc bank.Account
+	bal string
 }
 
-// Bubble Tea Messages
+func (i accountItem) Title() string {
+	if i.acc.Name == "" {
+		return "Account"
+	}
+	return i.acc.Name
+}
+
+func (i accountItem) Description() string {
+	bal := i.bal
+	if bal == "" {
+		bal = "—"
+	}
+	iban := i.acc.IBAN
+	if iban == "" {
+		iban = "(no IBAN)"
+	}
+	return fmt.Sprintf("%s · %s · avail %s", iban, i.acc.Currency, bal)
+}
+
+func (i accountItem) FilterValue() string { return i.acc.Name + " " + i.acc.IBAN }
+
+// Model is the operator-console Bubble Tea model. It is a read-only tool to set
+// up, inspect, and verify the Enable Banking ↔ MCP connection.
+type Model struct {
+	configPath string
+	cfg        *config.Config
+	client     enablebanking.APIClient
+	cache      *bank.Cache
+
+	state      viewState
+	prevState  viewState
+	width      int
+	height     int
+	status     string
+	err        error
+	showAbbrev bool
+
+	keys     keyMap
+	help     help.Model
+	spinner  spinner.Model
+	accounts list.Model
+	balances table.Model
+	txns     table.Model
+
+	selected   bank.Account
+	balanceRaw []bank.AccountBalance
+	txnRaw     []bank.Transaction
+}
+
+// Bubble Tea messages.
 type accountsMsg []bank.Account
 type errorMsg error
-
 type accountDetailMsg struct {
 	balances     []bank.AccountBalance
 	transactions []bank.Transaction
 	err          error
 }
 
-type transferSuccessMsg *enablebanking.CreatePaymentResponse
+// Commands.
 
-// Bubble Tea Commands
-
-func fetchAccountsCmd(client enablebanking.APIClient, sessionID string, bankName string, cache *bank.Cache) tea.Cmd {
+func fetchAccountsCmd(client enablebanking.APIClient, sessionID, bankName string, cache *bank.Cache, refresh bool) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
 
-		// Check cache first
-		if accounts, ok := cache.GetAccounts(ctx); ok {
-			return accountsMsg(accounts)
+		if !refresh {
+			if accounts, ok := cache.GetAccounts(ctx); ok {
+				return accountsMsg(accounts)
+			}
 		}
 
 		sess, err := client.GetSession(ctx, sessionID)
@@ -86,7 +120,6 @@ func fetchAccountsCmd(client enablebanking.APIClient, sessionID string, bankName
 			}
 			accounts = append(accounts, bank.MapAccountToDomain(*accDetails, bankName))
 		}
-
 		if len(accounts) == 0 {
 			return errorMsg(fmt.Errorf("no bank accounts found in this session"))
 		}
@@ -96,16 +129,14 @@ func fetchAccountsCmd(client enablebanking.APIClient, sessionID string, bankName
 	}
 }
 
-func fetchAccountDetailCmd(client enablebanking.APIClient, accountID string, cache *bank.Cache) tea.Cmd {
+func fetchAccountDetailCmd(client enablebanking.APIClient, accountID string, cache *bank.Cache, refresh bool) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 
-		// Check cache first
-		if detail, ok := cache.GetDetail(ctx, accountID); ok && len(detail.Balances) > 0 {
-			return accountDetailMsg{
-				balances:     detail.Balances,
-				transactions: detail.Transactions,
+		if !refresh {
+			if detail, ok := cache.GetDetail(ctx, accountID); ok && len(detail.Balances) > 0 {
+				return accountDetailMsg{balances: detail.Balances, transactions: detail.Transactions}
 			}
 		}
 
@@ -113,16 +144,13 @@ func fetchAccountDetailCmd(client enablebanking.APIClient, accountID string, cac
 		if err != nil {
 			return accountDetailMsg{err: fmt.Errorf("failed to fetch balances: %w", err)}
 		}
-
 		domainBals, available, booked := bank.MapBalancesToDomain(balances)
 
-		txs, err := client.GetTransactions(ctx, accountID, "", "")
 		var domainTxs []bank.Transaction
-		if err == nil {
+		if txs, err := client.GetTransactions(ctx, accountID, "", ""); err == nil {
 			domainTxs = bank.MapTransactionsToDomain(txs)
 		}
 
-		// Save to cache
 		detail, _ := cache.GetDetail(ctx, accountID)
 		detail.Account.ID = accountID
 		detail.Account.AvailableBalance = available
@@ -135,553 +163,431 @@ func fetchAccountDetailCmd(client enablebanking.APIClient, accountID string, cac
 	}
 }
 
-func executeTransferCmd(client enablebanking.APIClient, debtorIban, creditorIban, creditorName, amount, state, redirectURL string) tea.Cmd {
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-
-		resp, err := client.CreatePayment(ctx, debtorIban, creditorIban, creditorName, amount, "EUR", "SEPA", state, redirectURL)
-		if err != nil {
-			return errorMsg(err)
-		}
-		return transferSuccessMsg(resp)
-	}
-}
-
-func OpenBrowser(url string) error {
-	var err error
-	switch runtime.GOOS {
-	case "linux":
-		err = exec.Command("xdg-open", url).Start()
-	case "darwin":
-		err = exec.Command("open", url).Start()
-	case "windows":
-		err = exec.Command("rundll32", "url.dll,FileProtocolHandler", url).Start()
-	default:
-		err = fmt.Errorf("unsupported platform")
-	}
-	return err
-}
-
 func NewModel(configPath string) (*Model, error) {
 	cfg, err := config.LoadConfig(configPath)
 	if err != nil {
 		return nil, err
 	}
 
-	client := enablebanking.NewClient(cfg.EnableBanking.AppID, cfg.EnableBanking.PrivateKeyPath, cfg.EnableBanking.PrivateKeyContent, cfg.EnableBanking.Environment)
-	ttl := time.Duration(cfg.MCP.CacheTTLMinutes) * time.Minute
-	bCache := bank.NewCache(".bank.db", ttl)
+	client := enablebanking.NewClient(
+		cfg.EnableBanking.AppID, cfg.EnableBanking.PrivateKeyPath,
+		cfg.EnableBanking.PrivateKeyContent, cfg.EnableBanking.Environment,
+	)
+	bCache := bank.NewCache(".bank.db", time.Duration(cfg.MCP.CacheTTLMinutes)*time.Minute)
 
-	// Setup transfer inputs
-	inputs := make([]textinput.Model, 3)
-	inputs[0] = textinput.New()
-	inputs[0].Placeholder = "Creditor IBAN (e.g., DE12345678...)"
-	inputs[0].CharLimit = 34
-	inputs[0].Focus()
+	return newModel(configPath, cfg, client, bCache), nil
+}
 
-	inputs[1] = textinput.New()
-	inputs[1].Placeholder = "Creditor Name / Account Owner"
-	inputs[1].CharLimit = 70
+// newModel assembles the model from injected dependencies (no I/O), which keeps
+// it unit-testable with mock clients and a temp cache.
+func newModel(configPath string, cfg *config.Config, client enablebanking.APIClient, cache *bank.Cache) *Model {
+	sp := spinner.New()
+	sp.Spinner = spinner.Dot
+	sp.Style = lipgloss.NewStyle().Foreground(accentColor)
 
-	inputs[2] = textinput.New()
-	inputs[2].Placeholder = "Amount in EUR (e.g., 10.50)"
-	inputs[2].CharLimit = 12
+	delegate := list.NewDefaultDelegate()
+	delegate.Styles.SelectedTitle = delegate.Styles.SelectedTitle.Foreground(accentColor).BorderForeground(accentColor)
+	delegate.Styles.SelectedDesc = delegate.Styles.SelectedDesc.Foreground(accentColor).BorderForeground(accentColor)
+
+	accounts := list.New(nil, delegate, 0, 0)
+	accounts.SetShowTitle(false)
+	accounts.SetShowHelp(false)
+	accounts.SetShowStatusBar(false)
+	accounts.SetFilteringEnabled(false)
 
 	return &Model{
-		configPath:         configPath,
-		cfg:                cfg,
-		client:             client,
-		cache:              bCache,
-		state:              stateLoading,
-		statusMessage:      "Loading bank accounts...",
-		inputs:             inputs,
-		focusedInputIdx:    0,
-		selectedAccountIdx: 0,
-	}, nil
+		configPath: configPath,
+		cfg:        cfg,
+		client:     client,
+		cache:      cache,
+		state:      viewLoading,
+		status:     "Loading bank accounts…",
+		keys:       defaultKeyMap(),
+		help:       help.New(),
+		spinner:    sp,
+		accounts:   accounts,
+		balances:   newTable([]table.Column{{Title: "Balance Type", Width: 24}, {Title: "Amount", Width: 18}}),
+		txns:       newTable([]table.Column{{Title: "Date", Width: 12}, {Title: "Description", Width: 30}, {Title: "Amount", Width: 16}, {Title: "Status", Width: 10}}),
+	}
+}
+
+func newTable(cols []table.Column) table.Model {
+	t := table.New(table.WithColumns(cols), table.WithFocused(true))
+	st := table.DefaultStyles()
+	st.Header = st.Header.Bold(true).Foreground(accentColor).BorderBottom(true).BorderForeground(accentColor)
+	st.Selected = st.Selected.Foreground(textColor).Background(accentColor).Bold(true)
+	t.SetStyles(st)
+	return t
 }
 
 func (m *Model) Init() tea.Cmd {
-	return fetchAccountsCmd(m.client, m.cfg.EnableBanking.SessionID, m.cfg.EnableBanking.BankName, m.cache)
+	return tea.Batch(
+		m.spinner.Tick,
+		fetchAccountsCmd(m.client, m.cfg.EnableBanking.SessionID, m.cfg.EnableBanking.BankName, m.cache, false),
+	)
 }
 
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	var cmd tea.Cmd
-
 	switch msg := msg.(type) {
-	case tea.KeyMsg:
-		switch msg.String() {
-		case "q", "ctrl+c":
-			if m.state != stateTransfer {
-				return m, tea.Quit
-			}
-		case "esc":
-			switch m.state {
-			case stateAccountDetail, stateTransfer:
-				m.state = stateAccounts
-				m.err = nil
-				m.showAbbreviationsHelp = false
-				return m, nil
-			case stateTransferResult:
-				m.state = stateAccounts
-				return m, nil
-			}
+	case tea.WindowSizeMsg:
+		m.width, m.height = msg.Width, msg.Height
+		m.help.Width = msg.Width
+		return m, nil
+
+	case spinner.TickMsg:
+		if m.state == viewLoading {
+			var cmd tea.Cmd
+			m.spinner, cmd = m.spinner.Update(msg)
+			return m, cmd
 		}
+		return m, nil
 
 	case errorMsg:
-		m.state = stateError
+		m.state = viewError
 		m.err = msg
 		return m, nil
 
 	case accountsMsg:
-		m.accounts = msg
-		m.state = stateAccounts
-		m.statusMessage = ""
+		m.setAccounts(msg)
+		m.state = viewOverview
 		return m, nil
 
 	case accountDetailMsg:
 		if msg.err != nil {
-			m.state = stateError
+			m.state = viewError
 			m.err = msg.err
 			return m, nil
 		}
-		m.balances = msg.balances
-		m.transactions = msg.transactions
-		m.state = stateAccountDetail
-		m.statusMessage = ""
+		m.balanceRaw = msg.balances
+		m.txnRaw = msg.transactions
+		m.rebuildDetailTables()
+		m.state = viewDetail
 		return m, nil
 
-	case transferSuccessMsg:
-		m.transferLoading = false
-		m.paymentResp = msg
-		m.state = stateTransferResult
+	case tea.KeyMsg:
+		return m.handleKey(msg)
+	}
+
+	// Delegate to the focused component of the active view.
+	return m, m.updateFocused(msg)
+}
+
+func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, m.keys.Quit):
+		return m, tea.Quit
+	case key.Matches(msg, m.keys.Help):
+		m.help.ShowAll = !m.help.ShowAll
+		return m, nil
+	case key.Matches(msg, m.keys.Config):
+		if m.state == viewConfig {
+			m.state = m.prevState
+		} else if m.state == viewOverview || m.state == viewDetail {
+			m.prevState = m.state
+			m.state = viewConfig
+		}
 		return m, nil
 	}
 
-	// State-specific Updates
 	switch m.state {
-	case stateAccounts:
-		if keyMsg, ok := msg.(tea.KeyMsg); ok {
-			switch keyMsg.String() {
-			case "up":
-				if m.selectedAccountIdx > 0 {
-					m.selectedAccountIdx--
-				}
-			case "down":
-				if m.selectedAccountIdx < len(m.accounts)-1 {
-					m.selectedAccountIdx++
-				}
-			case "enter":
-				if len(m.accounts) > 0 {
-					m.state = stateLoading
-					m.statusMessage = "Loading account details (balances & transactions)..."
-					m.showAbbreviationsHelp = false
-					return m, fetchAccountDetailCmd(m.client, m.accounts[m.selectedAccountIdx].ID, m.cache)
-				}
-			}
+	case viewConfig:
+		if key.Matches(msg, m.keys.Back) {
+			m.state = m.prevState
 		}
+		return m, nil
 
-	case stateAccountDetail:
-		if keyMsg, ok := msg.(tea.KeyMsg); ok {
-			switch keyMsg.String() {
-			case "h", "H":
-				m.showAbbreviationsHelp = !m.showAbbreviationsHelp
-			case "n", "ctrl+n": // New Transfer
-				if len(m.accounts) > 0 {
-					m.state = stateTransfer
-					m.focusedInputIdx = 0
-					m.inputs[0].Focus()
-					m.inputs[1].Blur()
-					m.inputs[2].Blur()
-					m.inputs[0].SetValue("")
-					m.inputs[1].SetValue("")
-					m.inputs[2].SetValue("")
-				}
-			}
+	case viewError:
+		if key.Matches(msg, m.keys.Back) {
+			m.err = nil
+			m.state = viewOverview
 		}
+		return m, nil
 
-	case stateTransfer:
-		if keyMsg, ok := msg.(tea.KeyMsg); ok {
-			keyStr := keyMsg.String()
-
-			// Check if pressing a number key (1-9) to select an account suggestion
-			if len(keyStr) == 1 && keyStr >= "1" && keyStr <= "9" {
-				idx, _ := strconv.Atoi(keyStr)
-				idx = idx - 1 // 1-based to 0-based
-				suggestions := m.getDestinationSuggestions()
-				if idx >= 0 && idx < len(suggestions) {
-					target := suggestions[idx]
-					m.inputs[0].SetValue(target.IBAN)
-					m.inputs[1].SetValue(target.Name)
-					m.inputs[0].Blur()
-					m.inputs[1].Blur()
-					m.focusedInputIdx = 2
-					m.inputs[2].Focus()
-					return m, nil
-				}
+	case viewOverview:
+		switch {
+		case key.Matches(msg, m.keys.Enter):
+			if it, ok := m.accounts.SelectedItem().(accountItem); ok {
+				m.selected = it.acc
+				m.state = viewLoading
+				m.status = "Loading balances & transactions…"
+				return m, tea.Batch(m.spinner.Tick, fetchAccountDetailCmd(m.client, it.acc.ID, m.cache, false))
 			}
-
-			switch keyStr {
-			case "tab", "down":
-				m.inputs[m.focusedInputIdx].Blur()
-				m.focusedInputIdx = (m.focusedInputIdx + 1) % len(m.inputs)
-				m.inputs[m.focusedInputIdx].Focus()
-				return m, nil
-			case "shift+tab", "up":
-				m.inputs[m.focusedInputIdx].Blur()
-				m.focusedInputIdx = (m.focusedInputIdx - 1 + len(m.inputs)) % len(m.inputs)
-				m.inputs[m.focusedInputIdx].Focus()
-				return m, nil
-			case "enter":
-				if m.focusedInputIdx == len(m.inputs)-1 {
-					// Submit transfer
-					creditorIban := m.inputs[0].Value()
-					creditorName := m.inputs[1].Value()
-					amount := m.inputs[2].Value()
-
-					if creditorIban == "" || creditorName == "" || amount == "" {
-						m.err = fmt.Errorf("all fields are required")
-						return m, nil
-					}
-
-					if _, err := strconv.ParseFloat(amount, 64); err != nil {
-						m.err = fmt.Errorf("invalid amount format, must be decimal")
-						return m, nil
-					}
-
-					m.err = nil
-					m.transferLoading = true
-					state := fmt.Sprintf("pay-%d", time.Now().UnixNano())
-					debtorIban := m.accounts[m.selectedAccountIdx].IBAN
-
-					return m, executeTransferCmd(m.client, debtorIban, creditorIban, creditorName, amount, state, m.cfg.EnableBanking.RedirectURL)
-				} else {
-					m.inputs[m.focusedInputIdx].Blur()
-					m.focusedInputIdx = (m.focusedInputIdx + 1) % len(m.inputs)
-					m.inputs[m.focusedInputIdx].Focus()
-					return m, nil
-				}
-			}
+		case key.Matches(msg, m.keys.Refresh):
+			m.state = viewLoading
+			m.status = "Refreshing accounts…"
+			return m, tea.Batch(m.spinner.Tick, fetchAccountsCmd(m.client, m.cfg.EnableBanking.SessionID, m.cfg.EnableBanking.BankName, m.cache, true))
 		}
-
-		// Update focused input
-		m.inputs[m.focusedInputIdx], cmd = m.inputs[m.focusedInputIdx].Update(msg)
+		var cmd tea.Cmd
+		m.accounts, cmd = m.accounts.Update(msg)
 		return m, cmd
 
-	case stateTransferResult:
-		if keyMsg, ok := msg.(tea.KeyMsg); ok {
-			switch keyMsg.String() {
-			case "o":
-				if m.paymentResp != nil && m.paymentResp.URL != "" {
-					_ = OpenBrowser(m.paymentResp.URL)
-				}
-			}
+	case viewDetail:
+		switch {
+		case key.Matches(msg, m.keys.Back):
+			m.showAbbrev = false
+			m.state = viewOverview
+			return m, nil
+		case key.Matches(msg, m.keys.Abbrev):
+			m.showAbbrev = !m.showAbbrev
+			return m, nil
+		case key.Matches(msg, m.keys.Refresh):
+			m.state = viewLoading
+			m.status = "Refreshing account…"
+			return m, tea.Batch(m.spinner.Tick, fetchAccountDetailCmd(m.client, m.selected.ID, m.cache, true))
 		}
+		var cmd tea.Cmd
+		m.txns, cmd = m.txns.Update(msg)
+		return m, cmd
 	}
-
 	return m, nil
 }
 
-func (m *Model) getDestinationSuggestions() []bank.Account {
-	var suggestions []bank.Account
-	if len(m.accounts) <= 1 {
-		return suggestions
+func (m *Model) updateFocused(msg tea.Msg) tea.Cmd {
+	var cmd tea.Cmd
+	switch m.state {
+	case viewOverview:
+		m.accounts, cmd = m.accounts.Update(msg)
+	case viewDetail:
+		m.txns, cmd = m.txns.Update(msg)
 	}
-	currentIban := m.accounts[m.selectedAccountIdx].IBAN
-	for _, a := range m.accounts {
-		if a.IBAN != currentIban {
-			suggestions = append(suggestions, a)
-		}
-	}
-	return suggestions
+	return cmd
 }
 
-// Views Layouts
+func (m *Model) setAccounts(accounts []bank.Account) {
+	items := make([]list.Item, len(accounts))
+	for i, a := range accounts {
+		bal := "—"
+		if detail, ok := m.cache.GetDetail(context.Background(), a.ID); ok && detail.Account.AvailableBalance != "" {
+			bal = fmt.Sprintf("€%s", detail.Account.AvailableBalance)
+		}
+		items[i] = accountItem{acc: a, bal: bal}
+	}
+	m.accounts.SetItems(items)
+}
 
+func (m *Model) rebuildDetailTables() {
+	balRows := make([]table.Row, len(m.balanceRaw))
+	for i, b := range m.balanceRaw {
+		balRows[i] = table.Row{b.Name, b.Amount + " " + m.selected.Currency}
+	}
+	m.balances.SetRows(balRows)
+
+	txRows := make([]table.Row, len(m.txnRaw))
+	for i, tx := range m.txnRaw {
+		txRows[i] = table.Row{tx.Date, truncate(tx.Description, 30), tx.Amount + " " + tx.Currency, tx.Status}
+	}
+	m.txns.SetRows(txRows)
+	m.txns.SetCursor(0)
+}
+
+// View renders the active screen with a header, body, and help footer.
 func (m *Model) View() string {
-	s := ""
-
-	// Top Title banner (Minimalist, modern banking style)
-	s += titleStyle.Render("💳 PocketPay Mobile") + "  " + lipgloss.NewStyle().Foreground(grayColor).Render("v1.1.0") + "\n\n"
-
-	if m.err != nil && m.state != stateTransfer {
-		friendly := bank.FriendlyError(m.err)
-		s += errorStyle.Render(fmt.Sprintf("❌ %s", friendly.Title)) + "\n"
-		s += normalStyle.Render(friendly.Description) + "\n\n"
-		s += helpStyle.Render("Press [Esc] to go back, [Q] to quit.")
-		return s
+	if m.width == 0 {
+		return "Initializing…"
 	}
 
+	header := m.headerView()
+	footer := helpStyle.Render(m.help.View(m.keys))
+	bodyHeight := m.height - lipgloss.Height(header) - lipgloss.Height(footer) - 1
+	if bodyHeight < 3 {
+		bodyHeight = 3
+	}
+
+	body := m.bodyView(bodyHeight)
+	return lipgloss.JoinVertical(lipgloss.Left, header, body, footer)
+}
+
+func (m *Model) headerView() string {
+	title := titleStyle.Render("🏦 Enable Banking · Operator Console")
+
+	envStyle := successStyle
+	if strings.EqualFold(m.cfg.EnableBanking.Environment, "PRODUCTION") {
+		envStyle = errorStyle
+	}
+	consentText, consentStyle := consentStatus(m.cfg)
+
+	line1 := fmt.Sprintf("%s  %s   Bank: %s",
+		labelStyle.Render("Env"), envStyle.Render(m.cfg.EnableBanking.Environment),
+		normalStyle.Render(fmt.Sprintf("%s (%s)", m.cfg.EnableBanking.BankName, m.cfg.EnableBanking.BankCountry)),
+	)
+	line2 := fmt.Sprintf("%s  %s   %s  %s",
+		labelStyle.Render("Session"), normalStyle.Render(shorten(m.cfg.EnableBanking.SessionID, 12)),
+		labelStyle.Render("Consent"), consentStyle.Render(consentText),
+	)
+	line3 := fmt.Sprintf("%s  %s · access=%s · cache=%dm",
+		labelStyle.Render("MCP"), normalStyle.Render(string(m.cfg.MCP.Transport)),
+		accessStyle(m.cfg.MCP.AccessMode).Render(string(m.cfg.MCP.AccessMode)),
+		m.cfg.MCP.CacheTTLMinutes,
+	)
+	status := statusBoxStyle.Width(min(m.width-2, 78)).Render(lipgloss.JoinVertical(lipgloss.Left, line1, line2, line3))
+
+	return lipgloss.JoinVertical(lipgloss.Left, title, status)
+}
+
+func (m *Model) bodyView(h int) string {
 	switch m.state {
-	case stateLoading:
-		s += lipgloss.NewStyle().Foreground(accentColor).Render("⌛ "+m.statusMessage) + "\n"
+	case viewLoading:
+		return lipgloss.NewStyle().Foreground(accentColor).Render(m.spinner.View() + " " + m.status)
 
-	case stateAccounts:
-		// 1. Calculate Combined Net Worth across all bank accounts
-		totalAvailable := 0.0
-		totalBooked := 0.0
-		currency := "EUR"
-		hasBalances := false
-
-		for _, a := range m.accounts {
-			if detail, ok := m.cache.GetDetail(context.Background(), a.ID); ok {
-				hasBalances = true
-				if a.Currency != "" {
-					currency = a.Currency
-				}
-				if detail.Account.AvailableBalance != "" {
-					val, _ := strconv.ParseFloat(detail.Account.AvailableBalance, 64)
-					totalAvailable += val
-				}
-				if detail.Account.BookedBalance != "" {
-					val, _ := strconv.ParseFloat(detail.Account.BookedBalance, 64)
-					totalBooked += val
-				}
-			}
-		}
-
-		s += headerStyle.Render("👤 MY PORTFOLIO") + "\n"
-		if hasBalances {
-			s += lipgloss.NewStyle().Foreground(grayColor).Render("Combined Net Worth") + "\n"
-			s += lipgloss.NewStyle().Bold(true).Foreground(successColor).Render(fmt.Sprintf("   €%.2f %s", totalAvailable, currency)) + "\n"
-			s += lipgloss.NewStyle().Foreground(grayColor).Render(fmt.Sprintf("   (Booked Balance: €%.2f %s)", totalBooked, currency)) + "\n\n"
-		} else {
-			s += lipgloss.NewStyle().Foreground(grayColor).Render("Combined Net Worth") + "\n"
-			s += lipgloss.NewStyle().Italic(true).Foreground(amberColor).Render("   € --.-- (Load an account once to fetch balances)") + "\n\n"
-		}
-
-		s += headerStyle.Render("Active Cards & Accounts") + "\n"
-		s += helpStyle.Render("Select an account to view detailed transactions, balances, or transfer money.") + "\n\n"
-
-		if len(m.accounts) == 0 {
-			s += normalStyle.Render("No active bank accounts discovered in this session.") + "\n"
-		} else {
-			for i, a := range m.accounts {
-				// Get cached balance if exists
-				balStr := "--.--"
-				if detail, ok := m.cache.GetDetail(context.Background(), a.ID); ok && detail.Account.AvailableBalance != "" {
-					balStr = fmt.Sprintf("€%s", detail.Account.AvailableBalance)
-				}
-
-				cursor := "  "
-				widgetStyle := lipgloss.NewStyle().
-					Border(lipgloss.RoundedBorder()).
-					BorderForeground(grayColor).
-					Padding(0, 1).
-					Width(60)
-
-				if i == m.selectedAccountIdx {
-					cursor = "👉"
-					widgetStyle = widgetStyle.BorderForeground(accentColor).Bold(true)
-				}
-
-				nameStr := a.Name
-				if nameStr == "" {
-					nameStr = "Standard Checking"
-				}
-
-				cardContent := fmt.Sprintf("%s %-25s %18s\n   %-30s",
-					cursor, nameStr, balStr,
-					lipgloss.NewStyle().Foreground(grayColor).Render(a.IBAN),
-				)
-
-				s += widgetStyle.Render(cardContent) + "\n"
-			}
-		}
-		s += "\n"
-		s += helpStyle.Render("[Up/Down] Navigate Accounts  |  [Enter] Open Account Details  |  [Q] Quit")
-
-	case stateAccountDetail:
-		a := m.accounts[m.selectedAccountIdx]
-
-		s += headerStyle.Render("💳 ACTIVE DEBIT CARD") + "\n"
-
-		// Render virtual debit card
-		balStr := "--.--"
-		if a.AvailableBalance != "" {
-			balStr = a.AvailableBalance
-		} else if len(m.balances) > 0 {
-			balStr = m.balances[0].Amount
-		}
-
-		cardStyle := lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(accentColor).
-			Background(lipgloss.Color("234")). // Dark virtual card background
-			Padding(1, 2).
-			Width(50).
-			MarginBottom(1)
-
-		cardContent := fmt.Sprintf(
-			"🏦 %-38s\n\n"+
-				"   %-38s\n"+
-				"   %-38s\n\n"+
-				"   Balance: %s %s",
-			m.cfg.EnableBanking.BankName,
-			a.Name,
-			lipgloss.NewStyle().Foreground(grayColor).Render(a.IBAN),
-			successStyle.Render("€"+balStr),
-			a.Currency,
+	case viewError:
+		fe := bank.FriendlyError(m.err)
+		return lipgloss.JoinVertical(lipgloss.Left,
+			errorStyle.Render("❌ "+fe.Title),
+			normalStyle.Render(fe.Description),
+			"",
+			helpStyle.Render("Press [esc] to return, [q] to quit."),
 		)
 
-		s += cardStyle.Render(cardContent) + "\n"
+	case viewConfig:
+		return m.configView()
 
-		// Balances Subsection
-		s += successStyle.Render("💰 Balances") + "\n"
-		if m.showAbbreviationsHelp {
-			s += m.renderAbbreviationsHelp() + "\n"
-		} else {
-			if len(m.balances) == 0 {
-				s += normalStyle.Render("   No balances found for this account.") + "\n\n"
-			} else {
-				tbl := table.New().
-					Border(lipgloss.RoundedBorder()).
-					BorderStyle(lipgloss.NewStyle().Foreground(accentColor)).
-					Headers("Balance Type", "Amount")
-
-				for _, bal := range m.balances {
-					tbl.Row(bal.Name, bal.Amount+" "+a.Currency)
-				}
-
-				tbl.StyleFunc(func(row, col int) lipgloss.Style {
-					if row <= 0 {
-						return headerStyle.Padding(0, 1)
-					}
-					if col == 1 {
-						return successStyle.Padding(0, 1)
-					}
-					return normalStyle.Padding(0, 1)
-				})
-
-				s += tbl.String() + "\n"
-				s += tipStyle.Render("💡 Standardized banking abbreviations found in Type. Press [H] for a description guide.") + "\n\n"
-			}
+	case viewOverview:
+		m.accounts.SetSize(min(m.width, 80), h-1)
+		header := headerStyle.Render(fmt.Sprintf("Accounts (%d)", len(m.accounts.Items())))
+		if len(m.accounts.Items()) == 0 {
+			return lipgloss.JoinVertical(lipgloss.Left, header, normalStyle.Render("No accounts in this session."))
 		}
+		return lipgloss.JoinVertical(lipgloss.Left, header, m.accounts.View())
 
-		// Transactions Subsection
-		s += successStyle.Render("📋 Recent Transactions") + "\n"
-		if len(m.transactions) == 0 {
-			s += normalStyle.Render("   No recent transactions found or accessible for this account.") + "\n\n"
-		} else {
-			tbl := table.New().
-				Border(lipgloss.RoundedBorder()).
-				BorderStyle(lipgloss.NewStyle().Foreground(accentColor)).
-				Headers("Date", "Description", "Amount", "Status")
+	case viewDetail:
+		return m.detailView(h)
+	}
+	return ""
+}
 
-			limit := 10
-			if len(m.transactions) < limit {
-				limit = len(m.transactions)
-			}
-			for i := 0; i < limit; i++ {
-				tx := m.transactions[i]
-				tbl.Row(tx.Date, tx.Description, tx.Amount+" "+tx.Currency, tx.Status)
-			}
+func (m *Model) detailView(h int) string {
+	a := m.selected
+	head := lipgloss.JoinVertical(lipgloss.Left,
+		headerStyle.Render("🏠 "+a.Name),
+		normalStyle.Render(fmt.Sprintf("IBAN %s · %s", a.IBAN, a.Currency)),
+	)
 
-			tbl.StyleFunc(func(row, col int) lipgloss.Style {
-				txIdx := row - 1
-				if row <= 0 {
-					return headerStyle.Padding(0, 1)
-				}
-				if col == 2 {
-					if txIdx >= 0 && txIdx < len(m.transactions) && m.transactions[txIdx].IsIncoming {
-						return successStyle.Padding(0, 1)
-					}
-					return errorStyle.Padding(0, 1)
-				}
-				return normalStyle.Padding(0, 1)
-			})
-
-			s += tbl.String() + "\n\n"
-		}
-
-		s += helpStyle.Render("[Esc] Back to Overview  |  [N] New Transfer  |  [H] Toggle Help Guide  |  [Q] Quit")
-
-	case stateTransfer:
-		a := m.accounts[m.selectedAccountIdx]
-		s += headerStyle.Render("Initiate Bank Transfer") + "\n"
-		s += fmt.Sprintf("Source Account: %s (%s)\n\n", successStyle.Render(a.Name), a.IBAN)
-
-		if m.err != nil {
-			friendly := bank.FriendlyError(m.err)
-			s += errorStyle.Render(fmt.Sprintf("❌ %s", friendly.Title)) + "\n"
-			s += normalStyle.Render(friendly.Description) + "\n\n"
-		}
-
-		if m.transferLoading {
-			s += lipgloss.NewStyle().Foreground(accentColor).Render("⌛ Initiating payment...") + "\n"
-		} else {
-			for i, input := range m.inputs {
-				prompt := "  "
-				if i == m.focusedInputIdx {
-					prompt = "👉 "
-				}
-				s += fmt.Sprintf("%s%s\n", prompt, input.View()) + "\n"
-			}
-			s += "\n"
-
-			// Shortcuts
-			suggestions := m.getDestinationSuggestions()
-			if len(suggestions) > 0 {
-				s += tipStyle.Render("💡 Account Shortcuts (Press 1-9 to instantly pre-fill destination account):") + "\n"
-				for idx, sug := range suggestions {
-					if idx >= 9 {
-						break
-					}
-					s += normalStyle.Render(fmt.Sprintf("   [%d] %s (%s)\n", idx+1, sug.Name, sug.IBAN))
-				}
-				s += "\n"
-			}
-
-			s += helpStyle.Render("[Tab/Down] Next Field  |  [Up] Prev Field  |  [Enter] Submit  |  [Esc] Cancel")
-		}
-
-	case stateTransferResult:
-		s += headerStyle.Render("Transfer Result") + "\n\n"
-		if m.paymentResp != nil {
-			s += fmt.Sprintf("ID: %s\n", m.paymentResp.PaymentID)
-			s += fmt.Sprintf("Status: %s\n\n", successStyle.Render(m.paymentResp.Status))
-
-			if m.paymentResp.URL != "" {
-				s += boxStyle.Render("⚠️  Strong Customer Authentication (SCA) Required!\n\nYou must authorize this transfer at your bank.") + "\n\n"
-				s += helpStyle.Render("Press [O] to open the authorization link in your default browser.") + "\n\n"
-			} else {
-				s += "The payment is accepted or pending. Some banks submit automatically." + "\n\n"
-			}
-		}
-		s += helpStyle.Render("[Esc] Back to Overview  |  [Q] Quit")
+	var balSection string
+	if m.showAbbrev {
+		balSection = m.renderAbbreviationsHelp()
+	} else if len(m.balanceRaw) == 0 {
+		balSection = normalStyle.Render("No balances available.")
+	} else {
+		m.balances.SetHeight(min(len(m.balanceRaw)+1, 7))
+		m.balances.SetWidth(min(m.width, 60))
+		balSection = successStyle.Render("💰 Balances") + "\n" + m.balances.View()
 	}
 
-	return s
+	var txSection string
+	if len(m.txnRaw) == 0 {
+		txSection = normalStyle.Render("No recent transactions available.")
+	} else {
+		txH := h - lipgloss.Height(head) - lipgloss.Height(balSection) - 3
+		if txH < 3 {
+			txH = 3
+		}
+		m.txns.SetHeight(txH)
+		m.txns.SetWidth(min(m.width, 78))
+		txSection = successStyle.Render("📋 Recent Transactions") + "\n" + m.txns.View()
+	}
+
+	return lipgloss.JoinVertical(lipgloss.Left, head, "", balSection, "", txSection)
+}
+
+func (m *Model) configView() string {
+	intro := headerStyle.Render("📋 MCP Client Configuration")
+	hint := tipStyle.Render("Paste this into your MCP client (Claude Desktop, Cursor, …). Press [c]/[esc] to close.")
+	snippet := boxStyle.Render(m.mcpClientConfigSnippet())
+	return lipgloss.JoinVertical(lipgloss.Left, intro, hint, "", snippet)
+}
+
+func (m *Model) mcpClientConfigSnippet() string {
+	if m.cfg.MCP.Transport == config.TransportSSE {
+		port := m.cfg.MCP.Port
+		if port == 0 {
+			port = 8090
+		}
+		url := fmt.Sprintf("http://localhost:%d/", port)
+		if m.cfg.MCP.BearerToken != "" {
+			url += "?token=" + m.cfg.MCP.BearerToken
+		}
+		return fmt.Sprintf("{\n  \"mcpServers\": {\n    \"enable-banking\": {\n      \"url\": \"%s\"\n    }\n  }\n}", url)
+	}
+	return fmt.Sprintf("{\n  \"mcpServers\": {\n    \"enable-banking\": {\n      \"command\": \"enable-banking-go\",\n      \"args\": [\"server\", \"--config\", \"%s\"]\n    }\n  }\n}", m.configPath)
 }
 
 func (m *Model) renderAbbreviationsHelp() string {
-	helpText := "  📚 BALANCE TYPE ABBREVIATIONS GUIDE\n" +
-		"  ──────────────────────────────────────────────────────────\n" +
-		"  • CLBD : Closing Booked Balance\n" +
-		"           Final balance at end of day, officially booked by bank.\n" +
-		"  • ITBD : Interim Booked Balance\n" +
-		"           Current booked balance, can change during the day.\n" +
-		"  • OPBD : Opening Booked Balance\n" +
-		"           Booked balance at start of the day.\n" +
-		"  • XPBD : Expected Balance\n" +
-		"           Includes pending transactions / authorized holds.\n" +
-		"  • CLAV : Closing Available Balance\n" +
-		"           Closing balance available for immediate withdrawal.\n" +
-		"  • ITAV : Interim Available Balance\n" +
-		"           Interim balance available for immediate use.\n" +
-		"  ──────────────────────────────────────────────────────────\n" +
-		"  Press [H] again to close."
-
-	return boxStyle.Render(helpText)
+	guide := "📚 Balance type abbreviations\n" +
+		"  CLBD  Closing Booked — final end-of-day booked balance\n" +
+		"  ITBD  Interim Booked — current booked, may change intraday\n" +
+		"  OPBD  Opening Booked — booked balance at start of day\n" +
+		"  XPBD  Expected — includes pending / authorized holds\n" +
+		"  CLAV  Closing Available — available for withdrawal\n" +
+		"  ITAV  Interim Available — available for immediate use\n" +
+		"Press [h] to close."
+	return boxStyle.Render(guide)
 }
 
+// Helpers.
+
+func consentStatus(cfg *config.Config) (string, lipgloss.Style) {
+	vu := cfg.EnableBanking.ConsentValidUntil
+	if vu.IsZero() {
+		return "unknown", tipStyle
+	}
+	d := time.Until(vu)
+	if d <= 0 {
+		return "EXPIRED — re-run setup", errorStyle
+	}
+	return "valid for " + humanizeDuration(d), successStyle
+}
+
+func humanizeDuration(d time.Duration) string {
+	days := int(d.Hours()) / 24
+	hours := int(d.Hours()) % 24
+	mins := int(d.Minutes()) % 60
+	switch {
+	case days > 0:
+		return fmt.Sprintf("%dd %dh", days, hours)
+	case hours > 0:
+		return fmt.Sprintf("%dh %dm", hours, mins)
+	default:
+		return fmt.Sprintf("%dm", mins)
+	}
+}
+
+func accessStyle(mode config.AccessMode) lipgloss.Style {
+	switch mode {
+	case config.Unrestricted:
+		return errorStyle
+	case config.InternalOnly:
+		return tipStyle
+	default:
+		return successStyle
+	}
+}
+
+func shorten(s string, n int) string {
+	if s == "" {
+		return "(none)"
+	}
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "…"
+}
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	if n <= 1 {
+		return s[:n]
+	}
+	return s[:n-1] + "…"
+}
+
+// RunTUI launches the operator console in the alternate screen buffer.
 func RunTUI(configPath string) error {
 	model, err := NewModel(configPath)
 	if err != nil {
 		return err
 	}
-
-	p := tea.NewProgram(model)
-	_, err = p.Run()
+	_, err = tea.NewProgram(model, tea.WithAltScreen()).Run()
 	return err
 }

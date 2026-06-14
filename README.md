@@ -1,24 +1,24 @@
 # 🏦 Enable Banking Go Integration Suite
 
-A high-performance, modular, and enterprise-ready Go workspace implementing an Open Banking SDK, a secure Model Context Protocol (MCP) server, and a beautiful Bubble Tea Terminal User Interface (TUI) account dashboard for **Enable Banking**.
+A high-performance, modular, and enterprise-ready Go workspace implementing an Open Banking SDK, a secure Model Context Protocol (MCP) server, and a Bubble Tea Terminal User Interface (TUI) **operator console** for **Enable Banking**.
 
 ---
 
 ## 🚀 Key Features
 
-- **Standardized Go Open Banking SDK**: Robust API client supporting Account Information Services (AIS), balance checks, transaction history, and SEPA/Domestic payment transfers.
-- **Acid-Compliant Local Caching (`bbolt`)**: Leverages `go.etcd.io/bbolt` (etcd's battle-tested embedded key-value DB) to share thread-safe, fast background cache entries (`.bank.db`) between the TUI and the MCP Server.
-- **Interactive TUI Dashboard & Setup Wizard**:
-  - Automatically captures auth codes using an embedded callback listener.
-  - Features real-time search filtering across 680+ German/European banks.
-  - Structured like a clean, beautiful mobile app (Overview -> Account Details -> Transfer).
-  - High-fidelity tables built with Lipgloss.
-  - Visual Help tooltips defining standardized banking abbreviations (`CLBD`, `ITBD`, etc.).
+- **Standardized Go Open Banking SDK**: Robust API client supporting Account Information Services (AIS), balance checks, transaction history, and SEPA/Domestic payment initiation.
+- **Embedded Local Cache (`BadgerDB`)**: Leverages `github.com/dgraph-io/badger` (a fast, transactional, LSM-tree key-value store) with native, configurable TTLs to share cached entries (`.bank.db`) between the TUI and the MCP server.
+- **Read-Only TUI Operator Console & Setup Wizard**:
+  - A focused tool to **set up, inspect, and verify** the Enable Banking ↔ MCP connection — not a consumer banking app.
+  - Live connection panel: environment, bank, session, **consent-expiry countdown**, and MCP transport/access-mode/cache settings.
+  - Idiomatic Charm components — `list` for accounts, `table` for balances & transactions, `spinner`, and a `help`/`key` keybinding bar — with a responsive, alt-screen layout.
+  - A **"copy MCP client config"** overlay (press `c`) that prints a ready-to-paste snippet for Claude Desktop / Cursor.
+  - Visual balance-abbreviation guide (`CLBD`, `ITBD`, …) and the interactive setup wizard with embedded auth-callback capture and search across 680+ banks.
 - **Kubernetes-Ready Configuration**: Advanced config loader (`internal/config`) merging `config.json` with dynamic **Environment Variable Overrides** and automated schema/UUID validation.
 - **Enterprise-Grade MCP Server**:
   - **Dual Transport Modes**: Run over `stdio` or as a remote HTTP service using `sse` (Server-Sent Events).
   - **Token-Based Security**: Complete authorization middleware protecting SSE GET connections and POST requests.
-  - **Access Control Modes**: Keep your funds secure with granular write levels: `ReadOnly`, `InternalOnly` (restricted to transfers between your own linked accounts), or `Unrestricted`.
+  - **Access Control Modes**: Keep your funds secure with granular write levels: `ReadOnly`, `InternalOnly` (restricted to transfers between your own linked accounts), or `Unrestricted`. Payment initiation lives **only** in the MCP server (gated by these modes), keeping the TUI read-only.
 
 ---
 
@@ -34,8 +34,8 @@ Run the setup wizard to generate private keys, register certificates, select you
 go run ./cmd/enable-banking-go setup
 ```
 
-### 3. Launch TUI Account Dashboard
-Once authorized, open your gorgeous, mobile-style terminal dashboard:
+### 3. Launch the TUI Operator Console
+Once authorized, open the console to inspect the connection, accounts, balances, and transactions (read-only), and to copy your MCP client config:
 ```bash
 go run ./cmd/enable-banking-go tui
 ```
