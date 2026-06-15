@@ -83,7 +83,8 @@ Trust boundaries:
 **Container / supply chain**
 - The **image runs as non-root** (uid 10001), `allowPrivilegeEscalation:
   false`, `readOnlyRootFilesystem: true`, all capabilities dropped (see the Helm
-  chart). The writable cache is an `emptyDir`.
+  chart). The default `memory` cache needs no writable volume; the optional
+  `valkey` cache is an external service.
 - Observability is **in-process** (OpenTelemetry Go SDK, OTLP/HTTP). There is no
   eBPF agent and no privileged container; telemetry never widens the runtime
   attack surface.

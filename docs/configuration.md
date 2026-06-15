@@ -2,8 +2,9 @@
 
 `fin-mcp` is configured by a JSON file (default `config.json`) layered with
 `MCP_*` environment-variable overrides. The file is the source of truth (a
-Kubernetes ConfigMap in production); env vars override server settings at
-runtime (12-factor).
+Kubernetes **Secret** in production, since it holds session IDs, the bearer
+token, and any cache secrets); env vars override server settings at runtime
+(12-factor).
 
 > Manage the file with the `fin-mcp config` / `fin-mcp setup` commands rather
 > than editing by hand — see [setup.md](setup.md).
@@ -36,7 +37,7 @@ runtime (12-factor).
     "port": 8090,
     "bearer_token": "",
     "cache_ttl_minutes": 5,
-    "cache_path": ".bank.db",
+    "cache_type": "memory",
     "log_format": "text",
     "log_level": "info"
   }

@@ -1,13 +1,13 @@
 # 🏦 Enable Banking Go Integration Suite
 
-A high-performance, modular, and enterprise-ready Go workspace implementing an Open Banking SDK, a secure Model Context Protocol (MCP) server, and a Bubble Tea Terminal User Interface (TUI) **operator console** for **Enable Banking**.
+A high-performance, modular, and enterprise-ready Go workspace implementing an Open Banking SDK, a secure Model Context Protocol (MCP) server, and a Bubble Tea Terminal User Interface (TUI) **operator console**. The runtime and setup are **provider-agnostic** (a provider port + a setup-flow port); **Enable Banking** is the primary provider, with a built-in `mock` provider for testing and a clear path to add more — see [docs/setup.md](docs/setup.md#extending-add-a-new-provider).
 
 ---
 
 ## 🚀 Key Features
 
 - **Standardized Go Open Banking SDK**: Robust API client supporting Account Information Services (AIS), balance checks, transaction history, and SEPA/Domestic payment initiation.
-- **Embedded Local Cache (`BadgerDB`)**: Leverages `github.com/dgraph-io/badger` (a fast, transactional, LSM-tree key-value store) with native, configurable TTLs to share cached entries (`.bank.db`) between the TUI and the MCP server.
+- **Pluggable cache**: choose `none` (disabled), `memory` (in-process), or `valkey` (shared, external) with a configurable TTL. The server warns if a valkey cache runs without a password or TLS. Cache hit/miss + latency are exported as OpenTelemetry metrics.
 - **Read-Only TUI Operator Console & Setup Wizard**:
   - A focused tool to **set up, inspect, and verify** the Enable Banking ↔ MCP connection — not a consumer banking app.
   - Live connection panel: environment, bank, session, **consent-expiry countdown**, and MCP transport/access-mode/cache settings.
@@ -106,10 +106,14 @@ authorized bank link (an Enable Banking session) exposing one or more accounts
     "access_mode": "ReadOnly",
     "transport": "stdio",
     "port": 8090,
-    "bearer_token": "highly-secure-mcp-access-token"
+    "bearer_token": "highly-secure-mcp-access-token",
+    "cache_type": "memory"
   }
 }
 ```
+
+See **[docs/configuration.md](docs/configuration.md)** for the full schema
+(all `mcp.*` fields, `MCP_*` env overrides, cache backends, access modes).
 
 Manage it with the CLI instead of editing by hand:
 
@@ -129,14 +133,18 @@ The private key can be stored in the OS keychain for local runs
 mount it as a Secret file (`private_key_path`) or inline (`private_key_content`).
 
 ### ⛵ Kubernetes
-Mount the structured `providers` config as a ConfigMap/Secret file. The MCP server
-settings remain env-overridable:
+In production the **whole `config.json` is a Secret** (it carries bank session
+IDs, the bearer token, and the valkey password). Supply it via
+`config.existingSecret`. Operational MCP settings stay env-overridable:
 
 - `MCP_ACCESS_MODE` (`ReadOnly`, `InternalOnly`, `Unrestricted`)
 - `MCP_TRANSPORT` (`stdio` or `sse`)
 - `MCP_PORT` (e.g. `8090`)
 - `MCP_BEARER_TOKEN` (authorizes incoming HTTP/SSE requests)
-- `MCP_CACHE_TTL_MINUTES`, `MCP_LOG_FORMAT`, `MCP_LOG_LEVEL`
+- `MCP_CACHE_TYPE` (`none`/`memory`/`valkey`), `MCP_CACHE_TTL_MINUTES`, `MCP_LOG_FORMAT`, `MCP_LOG_LEVEL`
+
+See **[docs/deployment.md](docs/deployment.md)** for the Helm chart, the
+`config.existingSecret` model, and **kagent** integration.
 
 ---
 
@@ -157,12 +165,14 @@ To connect the MCP server to **Claude Desktop**, add the following block to your
 ```
 
 ### SSE Transport (HTTP Remote)
-If running the server on a remote cluster or container:
+If running the server on a remote cluster or container. The token goes in the
+`Authorization` header (the `?token=` query string is **not** accepted):
 ```json
 {
   "mcpServers": {
     "fin-mcp": {
-      "url": "http://your-server-ip:8090/sse?token=highly-secure-mcp-access-token"
+      "url": "https://your-server/sse",
+      "headers": { "Authorization": "Bearer highly-secure-mcp-access-token" }
     }
   }
 }
@@ -187,18 +197,19 @@ to enable it; leave it unset and the SDK installs nothing (zero overhead).
 Deploy the SSE server with the Helm chart:
 
 ```bash
+# Build config.json (with `fin-mcp config ...`), put it in a Secret, then:
+kubectl create secret generic fin-mcp-config --from-file=config.json=./config.json
 helm install fin-mcp ./deploy/helm/fin-mcp \
-  --set mcp.bearerToken="$(openssl rand -hex 24)" \
-  --set privateKey.content="$(cat private.key)" \
-  --set otel.exporterEndpoint="http://otel-collector:4318" \  # optional
-  --set-file config.providers=...   # or edit values.yaml
+  --set config.existingSecret=fin-mcp-config \
+  --set otel.exporterEndpoint="http://otel-collector:4318"   # optional
 ```
 
-The chart renders the structured `providers` topology into a ConfigMap, stores
-the bearer token and private key in a Secret, mounts a writable cache
-(`emptyDir`, `MCP_CACHE_PATH`), and applies a hardened `securityContext`
-(non-root, read-only rootfs, dropped capabilities). Setting
-`otel.exporterEndpoint` injects the OTLP env vars to enable telemetry.
+The chart renders the **whole `config.json` into a Secret** (never a ConfigMap,
+since it holds session IDs, the bearer token, and any valkey password), mounts it
+read-only, and applies a hardened `securityContext` (non-root, read-only rootfs,
+dropped capabilities). The default `memory` cache needs no volume. Setting
+`otel.exporterEndpoint` injects the OTLP env vars to enable telemetry. See the
+**[chart README](deploy/helm/fin-mcp/README.md)**.
 
 See **[SECURITY.md](SECURITY.md)** for the threat model, controls, and image
 verification with Cosign.
@@ -220,8 +231,8 @@ verification with Cosign.
                                     ▼
 ┌───────────────────────────────────┴───────────────────────────────────┐
 │                       internal/bank/cache.go                          │
-│                  - Persistent BadgerDB store (.bank.db)               │
-│                  - Configurable TTL key-value expirations             │
+│           - Pluggable cache: none | memory | valkey (shared)          │
+│           - Configurable TTL; OpenTelemetry hit/miss metrics          │
 └───────────┬───────────────────────────────────────────┬───────────────┘
             │                                           │
             ▼                                           ▼
@@ -238,9 +249,12 @@ cmd/fin-mcp/   # Thin main() entrypoint
 internal/                # Private application code
   cli/                   #   Kong command tree (Run() pattern)
   config/                #   Config loading, env overrides & validation
-  bank/                  #   Domain models, BadgerDB cache, error mapping
+  bank/                  #   Domain models, pluggable cache, error mapping
+  provider/              #   Provider-agnostic runtime port + registry + adapters
+  setupflow/             #   Provider-agnostic setup/auth flow port + registry
+  setup/                 #   Provider-agnostic setup orchestration
+  telemetry/             #   In-process OpenTelemetry (traces + metrics)
   mcp/                   #   MCP server (stdio + SSE transports)
-  setup/                 #   Non-interactive setup & key generation
   tui/                   #   Bubble Tea dashboard, wizard & shared styles
 pkg/
   enablebanking/         # Externally consumable Open Banking SDK
