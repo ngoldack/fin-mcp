@@ -14,8 +14,8 @@ acknowledgement within a few days.
 | Enable Banking app **private key** (PEM) | Critical | file, inline config, or OS keychain (local); mounted Secret (k8s) |
 | Bank **session IDs / consents** | High | config file (provider `connections[]`) — a k8s Secret in production (whole `config.json`) |
 | MCP **bearer token** (SSE) | High | `config.json` (k8s Secret) or env |
-| Cache **encryption key** / valkey password | High | `config.json` (k8s Secret) |
-| Cached accounts/balances/transactions | Medium | process memory, or valkey (AES-256-GCM encrypted at rest) |
+| Valkey **password** | High | `config.json` (k8s Secret) |
+| Cached accounts/balances/transactions | Medium | process memory, or an external valkey (plaintext — protect with password + TLS) |
 
 Trust boundaries:
 
@@ -72,9 +72,11 @@ Trust boundaries:
   because it carries bank session IDs, the bearer token, and any cache secrets.
   Supply it out-of-band via `config.existingSecret` so it never passes through
   Helm values or CI.
-- The **valkey cache encrypts values at rest** with AES-256-GCM by default; the
-  key (base64 32-byte) is generated at `config init` and stored as a secret. The
-  `memory` and `none` backends keep nothing in external storage.
+- The **valkey cache is external and stores values in plaintext**; it is a
+  shared store for already-fetched account data. Protect it with a
+  **password** (`cache_valkey_password`) and **TLS** (`cache_valkey_tls`) — the
+  server logs a startup warning if either is missing. The `memory` and `none`
+  backends keep nothing in external storage.
 - `config show` redacts secrets. Logs go to **stderr** as structured `slog` and
   do not print key material; stdout carries only the JSON-RPC stream.
 

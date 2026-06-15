@@ -53,8 +53,7 @@ const (
 )
 
 // Cache is the provider-agnostic cache port used by the MCP server. Backends:
-// none (disabled), memory (per-process), valkey (shared/external, optionally
-// encrypted).
+// none (disabled), memory (per-process), valkey (shared/external).
 type Cache interface {
 	GetAccounts(ctx context.Context) ([]Account, bool)
 	SetAccounts(ctx context.Context, accounts []Account)
@@ -75,16 +74,14 @@ type ValkeyOptions struct {
 
 // CacheOptions selects and configures the cache backend.
 type CacheOptions struct {
-	Type          string // "none" | "memory" | "valkey" (default "memory")
-	TTL           time.Duration
-	Valkey        ValkeyOptions
-	Encrypted     bool   // encrypt values at rest (valkey only)
-	EncryptionKey string // base64-encoded 32-byte AES-256 key (required when Encrypted)
+	Type   string // "none" | "memory" | "valkey" (default "memory")
+	TTL    time.Duration
+	Valkey ValkeyOptions
 }
 
 // NewCache builds the configured cache backend, wrapped with OpenTelemetry
 // instrumentation. It returns an error for misconfiguration (e.g. valkey
-// unreachable, or encryption requested without a valid key).
+// unreachable).
 func NewCache(opts CacheOptions) (Cache, error) {
 	ttl := opts.TTL
 	if ttl <= 0 {

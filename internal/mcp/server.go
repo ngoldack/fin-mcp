@@ -64,8 +64,6 @@ func NewMCPServer(configPath string) (*MCPServer, error) {
 			DB:       cfg.MCP.CacheValkeyDB,
 			TLS:      cfg.MCP.CacheValkeyTLS,
 		},
-		Encrypted:     cfg.MCP.CacheType == config.CacheValkey && cfg.MCP.CacheEncryption == config.CacheEncrypted,
-		EncryptionKey: cfg.MCP.CacheEncryptionKey,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize cache: %w", err)

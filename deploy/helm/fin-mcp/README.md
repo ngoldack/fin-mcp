@@ -11,8 +11,8 @@ helm install fin-mcp ./deploy/helm/fin-mcp \
 ## Secret model
 
 The **entire `config.json` is sensitive** — it contains bank session IDs and
-consents, the SSE bearer token, and any cache secrets (Valkey password,
-encryption key). The chart therefore renders it into a Kubernetes **Secret**
+consents, the SSE bearer token, and any cache secrets (Valkey password). The
+chart therefore renders it into a Kubernetes **Secret**
 (never a ConfigMap) and mounts it at `/etc/fin-mcp/config.json`.
 
 Two ways to supply it:
@@ -54,12 +54,10 @@ config:
     cache:
       type: memory          # none | memory | valkey
       ttlMinutes: 5
-      encryption: encrypted # valkey only (encrypted | none)
-      encryptionKey: ""     # base64 32-byte AES-256 key (sensitive)
       valkey:
-        address: valkey.cache.svc:6379
+        address: valkey.cache.svc:6379  # external server (NOT deployed by this chart)
         username: ""
-        password: ""        # sensitive
+        password: ""        # sensitive; strongly recommended
         db: 0
         tls: true
 ```
@@ -67,10 +65,10 @@ config:
 - **`none`** — caching disabled.
 - **`memory`** — per-process, in-memory. Fast, no dependency; **not shared**
   across replicas. Scale to 1 replica or use valkey if you need a shared cache.
-- **`valkey`** — shared, external Valkey/Redis. Values are AES-256-GCM encrypted
-  at rest by default (`encryption: encrypted`). Generate a key with
-  `fin-mcp config init` (it writes `cache_encryption_key`) or
-  `openssl rand -base64 32`.
+- **`valkey`** — shared, **external** Valkey/Redis. The chart does **not** deploy
+  a Valkey server; point `address` at your own. Cached account data is stored
+  there as plaintext, so set a **password** and **TLS** — the server warns at
+  startup if either is missing.
 
 ## kagent integration
 

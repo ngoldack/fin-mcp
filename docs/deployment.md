@@ -19,7 +19,7 @@ dropped). The cache is in-memory by default (no volume). See the
 ## Secrets: the whole config is a Secret
 
 `config.json` carries bank **session IDs / consents**, the **bearer token**, and
-any **cache secrets** (Valkey password, encryption key). It is therefore rendered
+any **cache secrets** (Valkey password). It is therefore rendered
 into a Kubernetes **Secret** (never a ConfigMap) and mounted at
 `/etc/fin-mcp/config.json`.
 
@@ -119,10 +119,8 @@ config:
     cache:
       type: valkey                      # none | memory | valkey
       ttlMinutes: 5
-      encryption: encrypted             # valkey: AES-256-GCM at rest (default)
-      encryptionKey: "<base64-32-bytes>"
       valkey:
-        address: valkey.cache.svc:6379
+        address: valkey.cache.svc:6379  # your external valkey (not deployed by this chart)
         password: "<password>"
         tls: true
 ```
@@ -130,9 +128,10 @@ config:
 - **`memory`** (default) is per-process — with `replicaCount > 1` each replica
   has its own cache. Use **`valkey`** for a shared cache across replicas (and
   across the TUI and the server).
-- For `valkey`, cached values are **encrypted at rest** by default. Generate the
-  key with `fin-mcp config init` or `openssl rand -base64 32`. The password and
-  key are sensitive and live in the config Secret.
+- `valkey` is **external only** — run/operate the server yourself; the chart does
+  not deploy one. Cached account data is stored there as plaintext, so set a
+  **password** and **TLS**. The server logs a startup warning if either is
+  missing. The password lives in the config Secret.
 - Cache hit/miss and latency are exported as OpenTelemetry metrics.
 
 ## Observability (OpenTelemetry)

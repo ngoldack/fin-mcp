@@ -12,15 +12,24 @@ import (
 )
 
 // valkeyCache is a shared cache backed by an external Valkey/Redis server.
-// Values are JSON-encoded and, when a codec is set, AES-256-GCM encrypted at
-// rest. TTL is enforced server-side via SET ... EX.
+// Values are JSON-encoded; TTL is enforced server-side via SET ... EX.
 type valkeyCache struct {
 	client valkey.Client
 	ttl    time.Duration
-	codec  *cipherCodec // nil => values stored unencrypted
 }
 
 func newValkeyCache(opts CacheOptions, ttl time.Duration) (Cache, error) {
+	// Cached financial data is stored in the external server. Warn loudly when
+	// the connection is not hardened: without a password anyone able to reach the
+	// server can read it, and without TLS the data (and password) cross the
+	// network in plaintext.
+	if opts.Valkey.Password == "" {
+		slog.Warn("valkey cache configured WITHOUT a password — cached account data is readable by anyone who can reach the server; set mcp.cache_valkey_password")
+	}
+	if !opts.Valkey.TLS {
+		slog.Warn("valkey cache configured WITHOUT TLS — cached account data and the password cross the network in plaintext; set mcp.cache_valkey_tls=true and use a TLS-terminating valkey")
+	}
+
 	clientOpt := valkey.ClientOption{
 		InitAddress: []string{opts.Valkey.Address},
 		Username:    opts.Valkey.Username,
@@ -35,47 +44,11 @@ func newValkeyCache(opts CacheOptions, ttl time.Duration) (Cache, error) {
 	if err != nil {
 		return nil, fmt.Errorf("connect to valkey at %q: %w", opts.Valkey.Address, err)
 	}
-
-	var codec *cipherCodec
-	if opts.Encrypted {
-		codec, err = newCipherCodec(opts.EncryptionKey)
-		if err != nil {
-			client.Close()
-			return nil, err
-		}
-	}
-	return &valkeyCache{client: client, ttl: ttl, codec: codec}, nil
-}
-
-func (c *valkeyCache) encode(v any) (string, bool) {
-	b, ok := marshal(v)
-	if !ok {
-		return "", false
-	}
-	if c.codec != nil {
-		sealed, err := c.codec.seal(b)
-		if err != nil {
-			return "", false
-		}
-		b = sealed
-	}
-	return string(b), true
-}
-
-func (c *valkeyCache) decode(s string, v any) bool {
-	b := []byte(s)
-	if c.codec != nil {
-		opened, err := c.codec.open(b)
-		if err != nil {
-			return false
-		}
-		b = opened
-	}
-	return json.Unmarshal(b, v) == nil
+	return &valkeyCache{client: client, ttl: ttl}, nil
 }
 
 func (c *valkeyCache) set(ctx context.Context, key string, v any) {
-	val, ok := c.encode(v)
+	b, ok := marshal(v)
 	if !ok {
 		return
 	}
@@ -83,7 +56,7 @@ func (c *valkeyCache) set(ctx context.Context, key string, v any) {
 	if seconds < 1 {
 		seconds = 1
 	}
-	cmd := c.client.B().Set().Key(key).Value(val).ExSeconds(seconds).Build()
+	cmd := c.client.B().Set().Key(key).Value(string(b)).ExSeconds(seconds).Build()
 	if err := c.client.Do(ctx, cmd).Error(); err != nil {
 		slog.WarnContext(ctx, "valkey cache set failed", "key", key, "error", err)
 	}
@@ -98,7 +71,7 @@ func (c *valkeyCache) get(ctx context.Context, key string, v any) bool {
 		}
 		return false
 	}
-	return c.decode(s, v)
+	return json.Unmarshal([]byte(s), v) == nil
 }
 
 func (c *valkeyCache) GetAccounts(ctx context.Context) ([]Account, bool) {

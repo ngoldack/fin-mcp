@@ -96,9 +96,7 @@ type-specific credentials block, and a provider-agnostic `connections[]` list.
 | `cache_valkey_username` | _(empty)_ | `MCP_CACHE_VALKEY_USERNAME` | Valkey ACL user. |
 | `cache_valkey_password` | _(empty)_ | `MCP_CACHE_VALKEY_PASSWORD` | Valkey password (**secret**). |
 | `cache_valkey_db` | `0` | `MCP_CACHE_VALKEY_DB` | Valkey logical DB. |
-| `cache_valkey_tls` | `false` | `MCP_CACHE_VALKEY_TLS` | Use TLS to Valkey. |
-| `cache_encryption` | `encrypted` | `MCP_CACHE_ENCRYPTION` | valkey only: `encrypted` \| `none`. |
-| `cache_encryption_key` | _(generated)_ | `MCP_CACHE_ENCRYPTION_KEY` | base64 32-byte AES-256 key (**secret**). |
+| `cache_valkey_tls` | `false` | `MCP_CACHE_VALKEY_TLS` | Use TLS to Valkey (recommended). |
 | `log_format` | `text` | `MCP_LOG_FORMAT` | `text` \| `json`. |
 | `log_level` | `info` | `MCP_LOG_LEVEL` | `debug` \| `info` \| `warn` \| `error`. |
 
@@ -106,25 +104,25 @@ type-specific credentials block, and a provider-agnostic `connections[]` list.
 
 The cache is pluggable and optional. `cache_type` selects the backend:
 
-| Backend | Shared? | Encryption | Notes |
-|---|---|---|---|
-| `none` | — | — | Caching disabled; every read hits the provider. |
-| `memory` | **No** (per-process) | n/a (process RAM) | Default. Fast, no dependency. The TUI and the server keep **independent** caches. |
-| `valkey` | **Yes** | AES-256-GCM (default on) | External Valkey/Redis; shared across processes/replicas. |
+| Backend | Shared? | Notes |
+|---|---|---|
+| `none` | — | Caching disabled; every read hits the provider. |
+| `memory` | **No** (per-process) | Default. Fast, no dependency. The TUI and the server keep **independent** caches. |
+| `valkey` | **Yes** | External Valkey/Redis; shared across processes/replicas. |
 
-For `valkey`, values are encrypted at rest by default. The encryption key is a
-base64-encoded 32-byte AES-256 key:
+`valkey` connects to an **external** server (run/operate it yourself). Cached
+account data is stored there, so harden the connection:
 
-- `fin-mcp config init` generates one into `cache_encryption_key`.
-- Or generate manually: `openssl rand -base64 32`.
+- Set `cache_valkey_password` — without it, anyone who can reach the server can
+  read cached account data. The server logs a warning at startup if it is empty.
+- Set `cache_valkey_tls: true` — without TLS the data and password cross the
+  network in plaintext. The server also warns if TLS is off.
 
-Set `cache_encryption: none` to store plaintext (not recommended). Cache hit/miss
-counts and operation latency are exported as OpenTelemetry metrics
-(`fin_mcp.cache.requests`, `fin_mcp.cache.operation.duration`).
+Cache hit/miss counts and operation latency are exported as OpenTelemetry
+metrics (`fin_mcp.cache.requests`, `fin_mcp.cache.operation.duration`).
 
-> Sensitive cache fields (`cache_valkey_password`, `cache_encryption_key`) belong
-> in a Secret — in Kubernetes the whole `config.json` is a Secret (see
-> [deployment.md](deployment.md)).
+> Sensitive cache fields (`cache_valkey_password`) belong in a Secret — in
+> Kubernetes the whole `config.json` is a Secret (see [deployment.md](deployment.md)).
 
 ## Environment overrides
 

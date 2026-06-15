@@ -1,68 +1,57 @@
-//go:build valkeyintegration
-
 package bank
 
 import (
 	"context"
-	"os"
-	"strings"
 	"testing"
 	"time"
 
-	"github.com/valkey-io/valkey-go"
+	"github.com/testcontainers/testcontainers-go"
+	tcvalkey "github.com/testcontainers/testcontainers-go/modules/valkey"
 )
 
-// TestValkeyIntegration exercises the valkey backend against a real server.
-// Run with: VALKEY_ADDR=127.0.0.1:6379 go test -tags valkeyintegration ./internal/bank/
-func TestValkeyIntegration(t *testing.T) {
-	addr := os.Getenv("VALKEY_ADDR")
-	if addr == "" {
-		t.Skip("set VALKEY_ADDR to run the valkey integration test")
+// TestValkeyCache_Integration spins a real Valkey via testcontainers and
+// exercises the valkey backend end to end. It skips when Docker is unavailable.
+func TestValkeyCache_Integration(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping valkey integration test in -short mode")
 	}
 	ctx := context.Background()
 
-	for _, encrypted := range []bool{false, true} {
-		key := ""
-		if encrypted {
-			key, _ = NewEncryptionKey()
-		}
-		c, err := NewCache(CacheOptions{
-			Type:          "valkey",
-			TTL:           time.Minute,
-			Valkey:        ValkeyOptions{Address: addr},
-			Encrypted:     encrypted,
-			EncryptionKey: key,
-		})
-		if err != nil {
-			t.Fatalf("encrypted=%v: NewCache: %v", encrypted, err)
-		}
+	container, err := tcvalkey.Run(ctx, "valkey/valkey:7.2.5")
+	if err != nil {
+		t.Skipf("could not start valkey container (Docker unavailable?): %v", err)
+	}
+	testcontainers.CleanupContainer(t, container)
 
-		accounts := []Account{{ID: "v1", Name: "Valkey", IBAN: "DE89370400440532013000", Currency: "EUR"}}
-		c.SetAccounts(ctx, accounts)
-		got, ok := c.GetAccounts(ctx)
-		if !ok || len(got) != 1 || got[0].ID != "v1" {
-			t.Fatalf("encrypted=%v: accounts miss: ok=%v %+v", encrypted, ok, got)
-		}
+	addr, err := container.Endpoint(ctx, "")
+	if err != nil {
+		t.Fatalf("container endpoint: %v", err)
+	}
 
-		c.SetDetail(ctx, "v1", AccountDetail{Account: Account{ID: "v1"}})
-		if _, ok := c.GetDetail(ctx, "v1"); !ok {
-			t.Fatalf("encrypted=%v: detail miss", encrypted)
-		}
+	c, err := NewCache(CacheOptions{
+		Type:   "valkey",
+		TTL:    time.Minute,
+		Valkey: ValkeyOptions{Address: addr},
+	})
+	if err != nil {
+		t.Fatalf("NewCache: %v", err)
+	}
+	defer func() { _ = c.Close() }()
 
-		// Prove encryption at rest: the raw stored value must not contain the IBAN.
-		if encrypted {
-			raw, err := valkey.NewClient(valkey.ClientOption{InitAddress: []string{addr}})
-			if err != nil {
-				t.Fatal(err)
-			}
-			s, _ := raw.Do(ctx, raw.B().Get().Key(keyAccounts).Build()).ToString()
-			if strings.Contains(s, "DE89370400440532013000") {
-				t.Error("encrypted backend leaked plaintext into valkey")
-			}
-			raw.Close()
-		}
+	accounts := []Account{{ID: "v1", Name: "Valkey", IBAN: "DE89370400440532013000", Currency: "EUR"}}
+	c.SetAccounts(ctx, accounts)
+	got, ok := c.GetAccounts(ctx)
+	if !ok || len(got) != 1 || got[0].ID != "v1" {
+		t.Fatalf("accounts miss: ok=%v %+v", ok, got)
+	}
 
-		c.Clear(ctx)
-		_ = c.Close()
+	c.SetDetail(ctx, "v1", AccountDetail{Account: Account{ID: "v1"}})
+	if _, ok := c.GetDetail(ctx, "v1"); !ok {
+		t.Fatal("detail miss")
+	}
+
+	c.Clear(ctx)
+	if _, ok := c.GetAccounts(ctx); ok {
+		t.Error("accounts should be gone after Clear")
 	}
 }

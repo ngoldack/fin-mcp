@@ -58,15 +58,15 @@ config:
     cache:
       type: memory # none | memory | valkey
       ttlMinutes: 5
-      # valkey-only: at-rest encryption of cached values.
-      encryption: encrypted # encrypted | none
-      encryptionKey: "" # base64-encoded 32-byte AES-256 key (sensitive)
+      # External Valkey/Redis only — this chart does NOT deploy a Valkey server.
+      # Point address at your own instance. Cached account data is stored there;
+      # use a password and TLS (the server warns at startup if either is missing).
       valkey:
-        address: "" # host:port
+        address: "" # host:port of your external valkey
         username: ""
-        password: "" # sensitive
+        password: "" # sensitive; strongly recommended
         db: 0
-        tls: false
+        tls: false # set true when your valkey terminates TLS
 
 # Enable Banking application private key (PEM). Rendered into the Secret and
 # mounted at /etc/fin-mcp/keys/private.key. Leave empty when using
